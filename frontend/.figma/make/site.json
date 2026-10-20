@@ -1,0 +1,11 @@
+{
+  "title": "PlanzyPop AI — Your vibe. Your plan. Your party.",
+  "description": "PlanzyPop AI is an all-in-one event planning tool that helps users organize celebrations with AI-generated plans, budget tracking, and personalized suggestions. Your vibe. Your plan. Your party.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
