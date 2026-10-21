@@ -37,18 +37,18 @@ class PlanRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     event_name: str = Field(..., alias="eventName", min_length=1, max_length=150, description="Name of the celebration")
-    event_type: str = Field(..., alias="eventType", min_length=1, max_length=100, description="Type of event (Birthday, Wedding, etc.)")
-    date: Optional[str] = Field(default="2026-05-15", description="Target celebration date (YYYY-MM-DD)")
-    location: str = Field(default="Jaipur, Rajasthan", description="City or venue name")
+    event_type: str = Field(..., alias="eventType", min_length=1, max_length=100, description="Type of event (Birthday, Wedding, Community event, etc.)")
+    date: Optional[str] = Field(default="2026-05-15", max_length=30, description="Target celebration date (YYYY-MM-DD)")
+    location: str = Field(default="Jaipur, Rajasthan", max_length=200, description="City or venue name")
     guests: int = Field(..., ge=1, le=100000, description="Expected guest count")
-    budget_inr: int = Field(..., alias="budgetInr", ge=500, description="Total budget in INR")
+    budget_inr: int = Field(..., alias="budgetInr", ge=500, le=1000000000, description="Total budget in INR")
 
-    celebration_style: Optional[str] = Field(default="Warm & intimate", alias="celebrationStyle", description="Style mood or vibe")
-    setting: Optional[str] = Field(default="Outdoor", description="Outdoor, Indoor, or Open to either")
+    celebration_style: Optional[str] = Field(default="Warm & intimate", alias="celebrationStyle", max_length=100, description="Style mood or vibe")
+    setting: Optional[str] = Field(default="Outdoor", max_length=100, description="Outdoor, Indoor, or Open to either")
     dietary_preferences: Optional[Union[str, List[str]]] = Field(
         default="Mixed menu", alias="dietaryPreferences", description="Dietary preferences"
     )
-    main_priority: Optional[str] = Field(default="Guest experience", alias="mainPriority", description="Primary focus")
+    main_priority: Optional[str] = Field(default="Guest experience", alias="mainPriority", max_length=100, description="Primary focus")
     preferences: Optional[List[str]] = Field(default_factory=list, description="Additional custom preference tags")
 
 

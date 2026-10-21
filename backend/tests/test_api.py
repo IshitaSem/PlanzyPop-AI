@@ -183,3 +183,107 @@ def test_error_message_transparency_in_curated_plan():
     assert plan.source == "curated_demo"
     assert plan.error_message == "Simulated API downtime"
 
+
+
+def test_community_event_plan():
+    """Verify community event planning satisfies Hack2Skill Challenge 5 requirements."""
+    payload = {
+        "eventName": "Greenfield Monsoon Mela",
+        "eventType": "Community event",
+        "date": "2026-08-15",
+        "location": "Community Grounds, Pune",
+        "guests": 350,
+        "budgetInr": 200000,
+        "celebrationStyle": "Inclusive & uplifting",
+        "setting": "Outdoor",
+        "mainPriority": "Community logistics",
+    }
+    response = client.post("/api/plan", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "concept_title" in data or "conceptTitle" in data
+    title = data.get("concept_title") or data.get("conceptTitle")
+    assert "Greenfield" in title
+    checklist = data.get("checklist", [])
+    assert any("permission" in c["title"].lower() or "municipal" in c["title"].lower() or "volunteer" in c["title"].lower() for c in checklist)
+
+
+def test_rate_limiter_protection():
+    """Verify rate limiter triggers HTTP 429 when abuse threshold is crossed."""
+    from app.core.rate_limiter import InMemoryRateLimiter
+    from fastapi import Request
+
+    test_limiter = InMemoryRateLimiter(limit_per_minute=3)
+    scope = {"type": "http", "client": ("198.51.100.1", 12345)}
+    req = Request(scope)
+
+    # First 3 should pass
+    test_limiter.check(req)
+    test_limiter.check(req)
+    test_limiter.check(req)
+
+    # 4th request must raise 429
+    with pytest.raises(Exception) as exc_info:
+        test_limiter.check(req)
+    assert "429" in str(exc_info.value)
+
+
+def test_oversized_payload_rejection():
+    """Verify input bounds reject excessively long inputs."""
+    payload = {
+        "eventName": "A" * 200,  # Max allowed is 150
+        "eventType": "Birthday",
+        "guests": 20,
+        "budgetInr": 50000,
+    }
+    response = client.post("/api/plan", json=payload)
+    assert response.status_code == 422
+
+
+def test_deterministic_budget_community_priority():
+    """Verify deterministic budget splits for community event priorities."""
+    from app.services.gemini_service import compute_deterministic_budget
+
+    budget = 180000
+    items = compute_deterministic_budget(budget, "Community logistics")
+    total = sum(i.amount_inr for i in items)
+    assert total == budget
+    cats = [i.category for i in items]
+    assert any("venue" in c.lower() or "sound" in c.lower() for c in cats)
+    assert any("sanitation" in c.lower() or "logistics" in c.lower() for c in cats)
+
+
+def test_plan_caching_performance():
+    """Verify in-memory caching serves repeated identical requests without re-computation."""
+    payload = {
+        "eventName": "Cache Speed Test Party",
+        "eventType": "Birthday",
+        "date": "2026-07-20",
+        "location": "Jaipur",
+        "guests": 45,
+        "budgetInr": 120000,
+        "celebrationStyle": "Playful",
+    }
+    # Initial request populates cache
+    res1 = client.post("/api/plan", json=payload)
+    assert res1.status_code == 200
+
+    # Second identical request must be served from cache with identical output
+    res2 = client.post("/api/plan", json=payload)
+    assert res2.status_code == 200
+    title1 = res1.json().get("concept_title") or res1.json().get("conceptTitle")
+    title2 = res2.json().get("concept_title") or res2.json().get("conceptTitle")
+    assert title1 == title2
+
+
+def test_chat_caching_performance():
+    """Verify in-memory caching serves repeated identical assistant queries instantly."""
+    payload = {
+        "message": "What is the best way to handle parking for 80 guests?",
+        "eventId": 10,
+    }
+    res1 = client.post("/api/chat", json=payload)
+    assert res1.status_code == 200
+    res2 = client.post("/api/chat", json=payload)
+    assert res2.status_code == 200
+    assert res1.json()["response"] == res2.json()["response"]

@@ -28,11 +28,21 @@ class Settings:
         "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8443,http://127.0.0.1:8443",
     )
 
+    # Performance and security controls
+    RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+    AI_TIMEOUT_SECONDS: float = float(os.getenv("AI_TIMEOUT_SECONDS", "12.0"))
+
     @property
     def allowed_origins(self) -> List[str]:
-        """Return list of allowed CORS origins."""
+        """Return list of allowed CORS origins with safe fallback."""
+        default_origins = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8443",
+            "http://127.0.0.1:8443",
+        ]
         origins = [origin.strip() for origin in self.FRONTEND_ORIGINS_RAW.split(",") if origin.strip()]
-        return origins or ["*"]
+        return origins or default_origins
 
     @property
     def is_gemini_configured(self) -> bool:

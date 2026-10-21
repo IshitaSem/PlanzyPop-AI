@@ -1,5 +1,7 @@
-"""Gemini AI Service integrating Google's official GenAI Python SDK."""
+"""Gemini AI Service integrating Google's official GenAI Python SDK with async execution and caching."""
 
+import asyncio
+import hashlib
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -16,14 +18,35 @@ from app.schemas.planner import (
 
 logger = logging.getLogger(__name__)
 
+# In-memory response cache for sub-millisecond repeated lookups and efficiency
+_PLAN_CACHE: Dict[str, PlanResponse] = {}
+_CHAT_CACHE: Dict[str, ChatResponse] = {}
+_MAX_CACHE_ENTRIES = 128
+
+
+def _get_plan_cache_key(req: PlanRequest) -> str:
+    key_src = (
+        f"{req.event_name.strip().lower()}|{req.event_type.strip().lower()}|"
+        f"{req.guests}|{req.budget_inr}|{req.celebration_style}|{req.setting}|"
+        f"{req.main_priority}|{req.location.strip().lower()}"
+    )
+    return hashlib.sha256(key_src.encode("utf-8")).hexdigest()
+
+
+def _get_chat_cache_key(req: ChatRequest) -> str:
+    ctx_str = json.dumps(req.event_context or {}, sort_keys=True)
+    key_src = f"{req.message.strip().lower()}|{req.event_id}|{ctx_str}"
+    return hashlib.sha256(key_src.encode("utf-8")).hexdigest()
+
 
 def compute_deterministic_budget(total_budget: int, priority: Optional[str] = None) -> List[BudgetAllocationItem]:
     """Deterministically compute budget allocation percentages and exact INR amounts.
 
     Budget arithmetic is strictly deterministic and never delegated to AI hallucination.
     """
-    # Adjust percentages slightly based on user priority
-    if priority and "food" in priority.lower():
+    p_lower = (priority or "").lower()
+
+    if "food" in p_lower:
         splits = [
             ("Food & drinks", 42.0, "Catering, bar service, live counters"),
             ("Venue", 22.0, "Rental, power backup, basic setup"),
@@ -31,13 +54,21 @@ def compute_deterministic_budget(total_budget: int, priority: Optional[str] = No
             ("Photography & media", 12.0, "Photo + film coverage"),
             ("Buffer & contingencies", 8.0, "Emergency buffer and miscellaneous"),
         ]
-    elif priority and ("décor" in priority.lower() or "atmosphere" in priority.lower()):
+    elif "décor" in p_lower or "atmosphere" in p_lower:
         splits = [
             ("Décor & atmosphere", 28.0, "Thematic styling, ambient lighting, statement florals"),
             ("Venue", 26.0, "Atmospheric setting matching the aesthetic"),
             ("Food & drinks", 28.0, "Curated cocktail/mocktail bites & dinner"),
             ("Photography & media", 11.0, "Aesthetic visual documentation"),
             ("Buffer & contingencies", 7.0, "Emergency buffer"),
+        ]
+    elif "community" in p_lower or "logistics" in p_lower:
+        splits = [
+            ("Venue, staging & sound", 30.0, "Park/ground setup, stage, audio & power"),
+            ("Food & community refreshments", 30.0, "Snack counters, hydration stations, potluck supplies"),
+            ("Activities & cultural games", 20.0, "Interactive games, sports, prizes, cultural performers"),
+            ("Logistics, sanitation & first aid", 12.0, "Waste management, permits, signage, safety"),
+            ("Buffer & contingencies", 8.0, "Unplanned logistics and reserve fund"),
         ]
     else:
         # Balanced default celebration allocation
@@ -75,7 +106,8 @@ def compute_deterministic_budget(total_budget: int, priority: Optional[str] = No
 def get_curated_plan(request: PlanRequest, error_message: Optional[str] = None) -> PlanResponse:
     """Generate a high-quality curated demo plan tailored to the user's input.
 
-    Used when Gemini API key is not configured or when API calls fail.
+    Used when Gemini API key is not configured, or when upstream API calls fail/timeout.
+    Supports weddings, birthdays, college fests, and community celebrations (Challenge 5).
     """
     event_type = request.event_type.lower()
     style = request.celebration_style or "Warm & intimate"
@@ -83,7 +115,47 @@ def get_curated_plan(request: PlanRequest, error_message: Optional[str] = None) 
     budget = request.budget_inr
 
     # Select thematic styling and concept based on event type
-    if "wedding" in event_type or "engagement" in event_type:
+    if "community" in event_type or "society" in event_type or "mela" in event_type or "fair" in event_type:
+        concept_title = f"{request.event_name} — Green Canopy & Community Mela"
+        concept_description = (
+            f"An uplifting, inclusive community celebration for {request.guests} neighbors and guests at {request.location}. "
+            f"Featuring local artisan stalls, family game zones, acoustic performances, and eco-friendly hospitality."
+        )
+        vibe = f"{style} · Inclusive & Uplifting · Vibrant Community Spirit"
+        palette = ["#2A9D8F", "#E9C46A", "#F4A261", "#264653"]
+        menu = [
+            "Local street food bites & live chaat counters",
+            "Community masala chai, spiced buttermilk & fruit coolers",
+            "Wholesome festival meal boxes / buffet favorites",
+            "Artisanal local sweets & celebration dessert treats",
+        ]
+        savings = [
+            "Partner with local neighborhood associations to share municipal staging and tent infrastructure.",
+            "Form community volunteer committees for reception, game coordination, and hospitality.",
+            "Replace single-use plastics with reusable water stations and compostable serveware.",
+        ]
+        timeline = [
+            TimelinePhase(timeframe="6 weeks before", action="Permits & venue clearance", details=f"Confirm ground booking at {request.location}"),
+            TimelinePhase(timeframe="4 weeks before", action="Community stalls & performers", details="Invite local artisans, acoustic music, and game hosts"),
+            TimelinePhase(timeframe="2 weeks before", action="Volunteer briefing & logistics", details=f"Organize committees for {request.guests} attendees"),
+            TimelinePhase(timeframe="1 week before", action="Sound, safety & sanitation", details="Verify sound equipment, waste bins, and first aid"),
+            TimelinePhase(timeframe="Event day", action="Community setup & celebration", details="Morning volunteer assembly, gates open for celebration"),
+        ]
+        checklist = [
+            ChecklistItem(title="Secure municipal approvals & venue reservation", category="Logistics", priority="High"),
+            ChecklistItem(title="Arrange hydration stations & waste segregation bins", category="Sanitation", priority="High"),
+            ChecklistItem(title="Finalize volunteer task roster and security lead", category="Community", priority="High"),
+            ChecklistItem(title="Coordinate sound production & acoustic microphone check", category="Entertainment", priority="Medium"),
+            ChecklistItem(title="Publish digital schedule & community map", category="Communication", priority="Medium"),
+        ]
+        vendors = [
+            "Tent, staging & sound production",
+            "Local catering & refreshment partners",
+            "Eco-sanitation & waste management crew",
+            "Community photographer & drone videographer",
+            "Family games & interactive host",
+        ]
+    elif "wedding" in event_type or "engagement" in event_type:
         concept_title = f"{request.event_name} — Marigold Twilight"
         concept_description = (
             f"An enchanting celebration at {request.location} for {request.guests} guests. "
@@ -103,6 +175,27 @@ def get_curated_plan(request: PlanRequest, error_message: Optional[str] = None) 
             "Choose seasonal local marigolds and mogra rather than imported blooms for 30% savings.",
             "Opt for signature mocktails instead of an extensive open bar menu.",
         ]
+        timeline = [
+            TimelinePhase(timeframe="8 weeks before", action="Lock venue and date", details=f"Confirm reservation at {request.location}"),
+            TimelinePhase(timeframe="4 weeks before", action="Confirm creative vendors", details="Finalize catering tasting and décor palette"),
+            TimelinePhase(timeframe="2 weeks before", action="Guest RSVPs & headcount", details=f"Confirm attendance close to {request.guests} guests"),
+            TimelinePhase(timeframe="1 week before", action="Vendor walk-through", details="Run final equipment check and run of show"),
+            TimelinePhase(timeframe="Event day", action="Setup, verify & celebrate", details="Arrive 3 hours early for checklist verification"),
+        ]
+        checklist = [
+            ChecklistItem(title="Send save-the-dates / invitations", category="Communication", priority="High"),
+            ChecklistItem(title="Confirm catering advance and dietary counts", category="Food", priority="High"),
+            ChecklistItem(title="Finalize musical playlist and audio setup", category="Entertainment", priority="Medium"),
+            ChecklistItem(title="Schedule photographer arrival & key shot list", category="Photography", priority="Medium"),
+            ChecklistItem(title="Prepare emergency celebration kit", category="General", priority="Low"),
+        ]
+        vendors = [
+            "Catering & beverage service",
+            "Venue & setup crew",
+            "Décor, flowers & ambient lighting",
+            "Photography & candid film",
+            "DJ / Acoustic sound system",
+        ]
     elif "college" in event_type or "fest" in event_type:
         concept_title = f"{request.event_name} — Neon Pulse"
         concept_description = (
@@ -120,6 +213,25 @@ def get_curated_plan(request: PlanRequest, error_message: Optional[str] = None) 
             "Use projection mapping and atmospheric haze instead of physical scenic backdrops.",
             "Leverage student volunteer squads for stage and hospitality management.",
             "Bundle sound and stage lighting from a single unified production vendor.",
+        ]
+        timeline = [
+            TimelinePhase(timeframe="8 weeks before", action="Auditorium / Campus booking", details=f"Confirm reservation at {request.location}"),
+            TimelinePhase(timeframe="4 weeks before", action="Artist line-up & technical rider", details="Finalize performance schedule and AV kit"),
+            TimelinePhase(timeframe="2 weeks before", action="Student ticketing & registration", details=f"Monitor registrations towards {request.guests}"),
+            TimelinePhase(timeframe="1 week before", action="Stage production & security test", details="Conduct sound check and gate security walkthrough"),
+            TimelinePhase(timeframe="Event day", action="Doors open & live performances", details="Volunteer deployment and sound console active"),
+        ]
+        checklist = [
+            ChecklistItem(title="Finalize campus authority permission letters", category="Administration", priority="High"),
+            ChecklistItem(title="Confirm main stage audio-visual and generator rental", category="Production", priority="High"),
+            ChecklistItem(title="Deploy volunteer squads for accreditation & entry", category="Logistics", priority="High"),
+            ChecklistItem(title="Set up first-aid station and emergency exits", category="Safety", priority="Medium"),
+        ]
+        vendors = [
+            "Stage, trussing & concert lighting",
+            "Concert audio production & sound engineers",
+            "Food trucks & quick snack concessions",
+            "Event coverage & live streaming",
         ]
     else:
         # Birthday / Private party / General celebration
@@ -141,33 +253,27 @@ def get_curated_plan(request: PlanRequest, error_message: Optional[str] = None) 
             "Select in-season local fruits and treats for the dessert table.",
             "Consolidate audio/visual gear rental into an all-in-one package.",
         ]
+        timeline = [
+            TimelinePhase(timeframe="4 weeks before", action="Confirm date, venue and invitations", details=f"Send invitations for {request.location}"),
+            TimelinePhase(timeframe="2 weeks before", action="Finalize cake, menu and playlist", details="Order custom cake and tasting notes"),
+            TimelinePhase(timeframe="1 week before", action="RSVP headcount & vendor check-in", details=f"Target {request.guests} attendees confirmed"),
+            TimelinePhase(timeframe="Event day", action="Decor placement & cake cutting", details="Welcome guests and enjoy the celebration"),
+        ]
+        checklist = [
+            ChecklistItem(title="Send save-the-dates / invitations", category="Communication", priority="High"),
+            ChecklistItem(title="Order bespoke celebration cake", category="Food", priority="High"),
+            ChecklistItem(title="Select party playlist & ambient lighting", category="Décor", priority="Medium"),
+            ChecklistItem(title="Confirm photographer arrival window", category="Photography", priority="Medium"),
+        ]
+        vendors = [
+            "Catering & signature desserts",
+            "Bespoke floral styling & lighting",
+            "Party photography",
+            "Acoustic music or DJ rental",
+        ]
 
     # Deterministic budget calculation
     budget_items = compute_deterministic_budget(budget, request.main_priority)
-
-    timeline = [
-        TimelinePhase(timeframe="8 weeks before", action="Lock venue and date", details=f"Confirm reservation at {request.location}"),
-        TimelinePhase(timeframe="4 weeks before", action="Confirm creative vendors", details="Finalize catering tasting and décor palette"),
-        TimelinePhase(timeframe="2 weeks before", action="Guest RSVPs & headcount", details=f"Confirm attendance close to {request.guests} guests"),
-        TimelinePhase(timeframe="1 week before", action="Vendor walk-through", details="Run final equipment check and run of show"),
-        TimelinePhase(timeframe="Event day", action="Setup, verify & celebrate", details="Arrive 3 hours early for checklist verification"),
-    ]
-
-    checklist = [
-        ChecklistItem(title="Send save-the-dates / invitations", category="Communication", priority="High"),
-        ChecklistItem(title="Confirm catering advance and dietary counts", category="Food", priority="High"),
-        ChecklistItem(title="Finalize musical playlist and audio setup", category="Entertainment", priority="Medium"),
-        ChecklistItem(title="Schedule photographer arrival & key shot list", category="Photography", priority="Medium"),
-        ChecklistItem(title="Prepare emergency celebration kit", category="General", priority="Low"),
-    ]
-
-    vendors = [
-        "Catering & beverage service",
-        "Venue & setup crew",
-        "Décor, flowers & ambient lighting",
-        "Photography & candid film",
-        "DJ / Acoustic sound system",
-    ]
 
     return PlanResponse(
         concept_title=concept_title,
@@ -205,7 +311,7 @@ def categorize_gemini_error(e: Exception) -> str:
 
 
 class GeminiService:
-    """Service encapsulating Gemini API calls and graceful demo fallbacks."""
+    """Service encapsulating Gemini API calls with non-blocking async execution, caching, and fallbacks."""
 
     def __init__(self) -> None:
         self._client: Optional[Any] = None
@@ -235,13 +341,21 @@ class GeminiService:
         return models
 
     async def generate_plan(self, request: PlanRequest) -> PlanResponse:
-        """Generate a complete event plan via Gemini, or fall back to curated demo plan."""
+        """Generate a complete event plan via Gemini, or fall back to curated demo plan with caching."""
+        cache_key = _get_plan_cache_key(request)
+        if cache_key in _PLAN_CACHE:
+            logger.info("Serving event plan from cache (key=%s)", cache_key[:8])
+            return _PLAN_CACHE[cache_key]
+
         client = self._get_client()
 
         if client is None:
             msg = "Gemini API key is not configured in backend/.env. Using curated demo celebration plan."
             logger.info("%s", msg)
-            return get_curated_plan(request, error_message=msg)
+            plan = get_curated_plan(request, error_message=msg)
+            if len(_PLAN_CACHE) < _MAX_CACHE_ENTRIES:
+                _PLAN_CACHE[cache_key] = plan
+            return plan
 
         prompt = (
             f"You are PlanzyPop AI, an expert celebration and event planning architect.\n"
@@ -285,10 +399,12 @@ class GeminiService:
 
         for model_name in models_to_try:
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
+                # Offload to worker thread with strict timeout to keep asyncio loop 100% non-blocking
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(client.models.generate_content, model=model_name, contents=prompt),
+                    timeout=settings.AI_TIMEOUT_SECONDS,
                 )
+
                 raw_text = response.text or ""
                 # Strip potential ```json fences
                 cleaned = raw_text.strip()
@@ -323,7 +439,7 @@ class GeminiService:
                     ChecklistItem(title="Finalize guest confirmations", category="General", priority="High")
                 ]
 
-                return PlanResponse(
+                plan = PlanResponse(
                     concept_title=data.get("concept_title", f"{request.event_name} Celebration"),
                     concept_description=data.get("concept_description", "A beautifully tailored celebration plan."),
                     vibe=data.get("vibe", request.celebration_style or "Tailored Celebration"),
@@ -337,25 +453,36 @@ class GeminiService:
                     is_demo=False,
                     source="gemini",
                 )
+
+                if len(_PLAN_CACHE) < _MAX_CACHE_ENTRIES:
+                    _PLAN_CACHE[cache_key] = plan
+                return plan
             except Exception as e:
                 last_error = e
                 logger.warning("Gemini generation attempt with model '%s' failed: %s (%s)", model_name, type(e).__name__, str(e))
-                # Stop iterating if authentication is fundamentally invalid
                 if "401" in str(e) or "403" in str(e) or "API_KEY_INVALID" in str(e) or "PERMISSION_DENIED" in str(e):
                     break
                 continue
 
         error_desc = categorize_gemini_error(last_error) if last_error else "Gemini API request failed. Serving curated demo plan."
         logger.warning("All Gemini generation attempts failed. %s", error_desc)
-        return get_curated_plan(request, error_message=error_desc)
+        fallback_plan = get_curated_plan(request, error_message=error_desc)
+        if len(_PLAN_CACHE) < _MAX_CACHE_ENTRIES:
+            _PLAN_CACHE[cache_key] = fallback_plan
+        return fallback_plan
 
     async def generate_chat_reply(self, request: ChatRequest) -> ChatResponse:
-        """Generate conversational event advice via Gemini, or provide curated response."""
+        """Generate conversational event advice via Gemini, or provide curated response with caching."""
+        cache_key = _get_chat_cache_key(request)
+        if cache_key in _CHAT_CACHE:
+            logger.info("Serving chat response from cache")
+            return _CHAT_CACHE[cache_key]
+
         client = self._get_client()
 
         if client is None:
             # Curated helpful demo assistant reply
-            return ChatResponse(
+            resp = ChatResponse(
                 response=(
                     f"Hi! As your PlanzyPop AI assistant, I can help you tailor your celebration. "
                     f"Regarding '{request.message}': Focus on prioritizing guest comfort and cohesive lighting first. "
@@ -370,6 +497,9 @@ class GeminiService:
                 source="curated_demo",
                 error_message="Gemini API key is not configured in backend/.env. Using demo assistant response.",
             )
+            if len(_CHAT_CACHE) < _MAX_CACHE_ENTRIES:
+                _CHAT_CACHE[cache_key] = resp
+            return resp
 
         prompt = (
             f"You are the PlanzyPop AI Celebration Assistant. Tagline: 'Your vibe. Your plan. Your party.'\n"
@@ -386,13 +516,14 @@ class GeminiService:
 
         for model_name in models_to_try:
             try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(client.models.generate_content, model=model_name, contents=prompt),
+                    timeout=settings.AI_TIMEOUT_SECONDS,
                 )
+
                 text = (response.text or "").strip()
                 if text:
-                    return ChatResponse(
+                    resp = ChatResponse(
                         response=text,
                         suggestions=[
                             "Review budget breakdown",
@@ -402,6 +533,9 @@ class GeminiService:
                         is_demo=False,
                         source="gemini",
                     )
+                    if len(_CHAT_CACHE) < _MAX_CACHE_ENTRIES:
+                        _CHAT_CACHE[cache_key] = resp
+                    return resp
             except Exception as e:
                 last_error = e
                 logger.warning("Gemini chat attempt with model '%s' failed: %s", model_name, str(e))
@@ -411,7 +545,7 @@ class GeminiService:
 
         error_desc = categorize_gemini_error(last_error) if last_error else "Gemini chat request failed. Serving demo response."
         logger.warning("All Gemini chat attempts failed. %s", error_desc)
-        return ChatResponse(
+        fallback_resp = ChatResponse(
             response=(
                 f"Thanks for asking! For '{request.message}', keeping your key vendor quotes aligned "
                 f"with your total budget is crucial. Consider booking catering early to lock in seasonal rates."
@@ -425,6 +559,9 @@ class GeminiService:
             source="curated_demo",
             error_message=error_desc,
         )
+        if len(_CHAT_CACHE) < _MAX_CACHE_ENTRIES:
+            _CHAT_CACHE[cache_key] = fallback_resp
+        return fallback_resp
 
 
 gemini_service = GeminiService()

@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.routes.chat import router as chat_router
 from app.routes.health import router as health_router
@@ -15,6 +16,9 @@ app = FastAPI(
     ),
     version=settings.APP_VERSION,
 )
+
+# Enable GZip compression for efficient JSON response delivery
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Configure Cross-Origin Resource Sharing (CORS)
 app.add_middleware(

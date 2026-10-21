@@ -1,11 +1,12 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { api, normalizePlan, PlanResponse } from "./services/api";
 
 type Page = "overview" | "events" | "planner" | "budget" | "tasks" | "vendors" | "inspiration" | "settings";
 type EventItem = { id: number; name: string; type: string; date: string; location: string; guests: number; budget: number; progress: number; tone: string };
 type Task = { id: number; title: string; event: string; due: string; done: boolean };
-type Expense = { id: number; category: string; item: string; planned: number; actual: number };
-type Vendor = { id: number; name: string; category: string; quote: number; status: "Considering" | "Booked"; phone?: string; notes?: string; isDemo?: boolean };
+type Expense = { id: number; category: string; item: string; planned: number; actual: number; eventId?: number };
+type Vendor = { id: number; name: string; category: string; quote: number; status: "Considering" | "Booked"; phone?: string; notes?: string; isDemo?: boolean; eventName?: string };
+type UserProfile = { name: string; guests: number; currency: string; style: string };
 
 const photos = [
   "https://images.unsplash.com/photo-1678514823362-fd5ec94505a2?auto=format&fit=crop&w=900&q=85",
@@ -14,30 +15,37 @@ const photos = [
   "https://images.unsplash.com/photo-1675437992142-a1865df78b83?auto=format&fit=crop&w=900&q=85",
 ];
 
+const defaultProfile: UserProfile = {
+  name: "Meera Sharma",
+  guests: 80,
+  currency: "INR",
+  style: "Warm & intimate",
+};
+
 const seedEvents: EventItem[] = [
   { id: 1, name: "Anaya's 21st", type: "Birthday", date: "2026-04-18", location: "The Courtyard, Jaipur", guests: 60, budget: 120000, progress: 72, tone: "peach" },
   { id: 2, name: "Riya & Kabir", type: "Engagement", date: "2026-05-09", location: "Lotus Gardens, Delhi", guests: 140, budget: 450000, progress: 48, tone: "pink" },
-  { id: 3, name: "AURA '26", type: "College fest", date: "2026-06-12", location: "North Campus", guests: 850, budget: 800000, progress: 31, tone: "blue" },
+  { id: 3, name: "Greenfield Community Mela", type: "Community event", date: "2026-06-12", location: "Central Park Grounds", guests: 450, budget: 250000, progress: 40, tone: "blue" },
 ];
 
 const seedTasks: Task[] = [
   { id: 1, title: "Confirm cake tasting", event: "Anaya's 21st", due: "Today, 5:00 PM", done: false },
   { id: 2, title: "Review photographer quote", event: "Riya & Kabir", due: "Tomorrow", done: false },
-  { id: 3, title: "Send volunteer brief", event: "AURA '26", due: "Fri, 11:00 AM", done: true },
+  { id: 3, title: "Municipal park permission check", event: "Greenfield Community Mela", due: "Fri, 11:00 AM", done: true },
   { id: 4, title: "Finalize floral palette", event: "Riya & Kabir", due: "18 Mar", done: false },
 ];
 
 const seedExpenses: Expense[] = [
-  { id: 1, category: "Venue", item: "Courtyard booking", planned: 50000, actual: 48000 },
-  { id: 2, category: "Food", item: "Catering advance", planned: 35000, actual: 38000 },
-  { id: 3, category: "Decoration", item: "Florals & lighting", planned: 18000, actual: 12500 },
-  { id: 4, category: "Photography", item: "Photo + film", planned: 15000, actual: 15000 },
+  { id: 1, category: "Venue", item: "Courtyard booking", planned: 50000, actual: 48000, eventId: 1 },
+  { id: 2, category: "Food", item: "Catering advance", planned: 35000, actual: 38000, eventId: 1 },
+  { id: 3, category: "Decoration", item: "Florals & lighting", planned: 18000, actual: 12500, eventId: 1 },
+  { id: 4, category: "Photography", item: "Photo + film", planned: 15000, actual: 15000, eventId: 1 },
 ];
 
 const seedVendors: Vendor[] = [
-  { id: 1, name: "Demo Floral Studio", category: "Decoration", quote: 28500, status: "Booked", phone: "+91 98XX XXX 210", notes: "Peach & blush florals with warm pendant lighting.", isDemo: true },
-  { id: 2, name: "Sample Frame Co.", category: "Photography", quote: 42000, status: "Considering", phone: "+91 97XX XXX 614", notes: "Pre-event golden hour shoot + candid coverage.", isDemo: true },
-  { id: 3, name: "Demo Table Kitchen", category: "Catering", quote: 96000, status: "Considering", phone: "+91 99XX XXX 032", notes: "Live chaat station + plated regional dinner.", isDemo: true },
+  { id: 1, name: "Demo Floral Studio", category: "Decoration", quote: 28500, status: "Booked", phone: "+91 98XX XXX 210", notes: "Peach & blush florals with warm pendant lighting.", isDemo: true, eventName: "Anaya's 21st" },
+  { id: 2, name: "Sample Frame Co.", category: "Photography", quote: 42000, status: "Considering", phone: "+91 97XX XXX 614", notes: "Pre-event golden hour shoot + candid coverage.", isDemo: true, eventName: "Riya & Kabir" },
+  { id: 3, name: "Community Sound & Stage", category: "Production", quote: 65000, status: "Considering", phone: "+91 99XX XXX 032", notes: "Acoustic stage sound, wireless mics & generator backup.", isDemo: true, eventName: "Greenfield Community Mela" },
 ];
 
 const nav: { id: Page; label: string; icon: string }[] = [
@@ -76,54 +84,275 @@ function Icon({ name, size = 19, fill = "none" }: { name: string; size?: number;
 
 function useStored<T>(key: string, initial: T) {
   const [value, setValue] = useState<T>(() => {
-    try { return JSON.parse(localStorage.getItem(key) || "") || initial; } catch { return initial; }
+    try {
+      const item = localStorage.getItem(key);
+      return item ? JSON.parse(item) : initial;
+    } catch {
+      return initial;
+    }
   });
-  useEffect(() => localStorage.setItem(key, JSON.stringify(value)), [key, value]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.warn(`Could not save ${key} to localStorage:`, e);
+    }
+  }, [key, value]);
   return [value, setValue] as const;
 }
 
-const money = (n: number) => `₹${n.toLocaleString("en-IN")}`;
+const money = (n: number) => `₹${Math.round(n || 0).toLocaleString("en-IN")}`;
 const day = (date: string) => Math.max(0, Math.ceil((new Date(date).getTime() - Date.now()) / 86400000));
 
-function Button({ children, onClick, kind = "dark", type = "button", disabled = false }: { children: ReactNode; onClick?: () => void; kind?: "dark" | "light" | "accent"; type?: "button" | "submit"; disabled?: boolean }) {
-  return <button type={type} className={`btn ${kind}`} onClick={onClick} disabled={disabled}>{children}</button>;
+function Button({ children, onClick, kind = "dark", type = "button", disabled = false, ariaLabel }: { children: ReactNode; onClick?: () => void; kind?: "dark" | "light" | "accent"; type?: "button" | "submit"; disabled?: boolean; ariaLabel?: string }) {
+  return <button type={type} className={`btn ${kind}`} onClick={onClick} disabled={disabled} aria-label={ariaLabel}>{children}</button>;
 }
 
 function Progress({ value, color = "var(--ink)" }: { value: number; color?: string }) {
-  return <div className="progress" role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${value}%`, background: color }}/></div>;
+  return <div className="progress" role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${Math.min(100, Math.max(0, value))}%`, background: color }}/></div>;
 }
 
 function PageTitle({ eyebrow, title, text, action }: { eyebrow: string; title: ReactNode; text: string; action?: ReactNode }) {
   return <header className="page-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{text}</p></div>{action}</header>;
 }
 
-function Overview({ events, tasks, setTasks, go }: { events: EventItem[]; tasks: Task[]; setTasks: (v: Task[]) => void; go: (p: Page) => void }) {
+function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [close]);
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={close}>
+      <section
+        ref={modalRef}
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <div className="modal-head">
+          <h2 id="modal-title">{title}</h2>
+          <button aria-label="Close dialog" onClick={close}>×</button>
+        </div>
+        {children}
+      </section>
+    </div>
+  );
+}
+
+function Field({ label, name, type = "text", placeholder, required = false, defaultValue, value, onChange }: { label: string; name: string; type?: string; placeholder?: string; required?: boolean; defaultValue?: string | number; value?: string | number; onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void }) {
+  return <label className="field"><span>{label}</span><input name={name} type={type} placeholder={placeholder} required={required} defaultValue={defaultValue} value={value} onChange={onChange}/></label>;
+}
+
+function Overview({
+  events,
+  tasks,
+  setTasks,
+  expenses,
+  userProfile,
+  go,
+}: {
+  events: EventItem[];
+  tasks: Task[];
+  setTasks: (v: Task[]) => void;
+  expenses: Expense[];
+  userProfile: UserProfile;
+  go: (p: Page) => void;
+}) {
   const completed = tasks.filter(t => t.done).length;
-  const planned = events.reduce((a, e) => a + e.budget, 0);
+  const planned = events.reduce((a, e) => a + (Number(e.budget) || 0), 0);
+  const actualExpenses = expenses.reduce((a, e) => a + (Number(e.actual) || 0), 0);
+  const avgProgress = events.length > 0 ? Math.round(events.reduce((a, e) => a + e.progress, 0) / events.length) : 0;
+  const percentUtilized = planned > 0 ? Math.round((actualExpenses / planned) * 100) : 0;
+  const strokePercent = Math.min(100, Math.max(0, percentUtilized));
+  const remainingAmount = Math.max(0, planned - actualExpenses);
+
+  const todayStr = useMemo(() => {
+    return new Date().toLocaleDateString("en-IN", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    }).toUpperCase();
+  }, []);
+
+  const firstName = (userProfile.name || "Meera").split(" ")[0];
+  const sortedEvents = [...events].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const nextEvent = sortedEvents[0];
+  const daysRemaining = nextEvent ? day(nextEvent.date) : 0;
+
   return <>
-    <PageTitle eyebrow="MONDAY, 16 MARCH" title={<>Good morning, <em>Meera.</em></>} text="Three celebrations are taking shape. Here's what needs your attention." action={<div className="title-actions"><Button kind="light" onClick={() => go("planner")}><Icon name="spark"/> Ask PlanzyPop</Button><Button onClick={() => go("planner")}><Icon name="plus"/> Plan an event</Button></div>}/>
+    <PageTitle
+      eyebrow={todayStr}
+      title={<>Good morning, <em>{firstName}.</em></>}
+      text={`${events.length} celebration${events.length === 1 ? " is" : "s are"} taking shape. Here's what needs your attention.`}
+      action={
+        <div className="title-actions">
+          <Button kind="light" onClick={() => go("planner")}><Icon name="spark"/> Ask PlanzyPop</Button>
+          <Button onClick={() => go("planner")}><Icon name="plus"/> Plan an event</Button>
+        </div>
+      }
+    />
+
     <section className="hero-grid">
       <article className="hero-card">
-        <div className="hero-copy"><span className="pill dark">NEXT UP · 33 DAYS</span><h2>Anaya's big day,<br/><em>almost ready.</em></h2><p>A playful garden dinner with peach florals, warm lights, and her closest people.</p><Button kind="light" onClick={() => go("events")}>Open event <Icon name="arrow"/></Button></div>
-        <div className="hero-art"><div className="sun"/><div className="flower f1"/><div className="flower f2"/><div className="flower f3"/><span>21</span></div>
+        <div className="hero-copy">
+          <span className="pill dark">
+            {nextEvent ? `NEXT UP · ${daysRemaining} DAYS` : "READY TO CELEBRATE"}
+          </span>
+          <h2>
+            {nextEvent ? nextEvent.name : "Your next big event,"}
+            <br/>
+            <em>{nextEvent ? "taking shape." : "starts right here."}</em>
+          </h2>
+          <p>
+            {nextEvent
+              ? `${nextEvent.type} at ${nextEvent.location} for ${nextEvent.guests} guests. Budget: ${money(nextEvent.budget)}.`
+              : "Launch the AI event planner to receive custom roadmaps, budgets, and vendor checklists."}
+          </p>
+          <Button kind="light" onClick={() => go(nextEvent ? "events" : "planner")}>
+            {nextEvent ? "Open event" : "Create an event"} <Icon name="arrow"/>
+          </Button>
+        </div>
+        <div className="hero-art">
+          <div className="sun"/>
+          <div className="flower f1"/>
+          <div className="flower f2"/>
+          <div className="flower f3"/>
+          <span>{daysRemaining || 21}</span>
+        </div>
       </article>
-      <article className="ai-card"><div className="orb"><Icon name="spark" size={26}/></div><span className="eyebrow">PLANZYPOP NOTE</span><h3>A little idea for Anaya</h3><p>A sunset mocktail bar fits the garden theme and can stay under ₹8,000.</p><button className="text-link" onClick={() => go("planner")}>Build this into the plan <Icon name="arrow" size={16}/></button></article>
+
+      <article className="ai-card">
+        <div className="orb"><Icon name="spark" size={26}/></div>
+        <span className="eyebrow">PLANZYPOP NOTE</span>
+        <h3>A little idea for {nextEvent ? nextEvent.name : "your celebration"}</h3>
+        <p>
+          {nextEvent && nextEvent.type.toLowerCase().includes("community")
+            ? "Set up a shared hydration & fruit cooler counter with compostable cups to keep logistics eco-friendly and affordable."
+            : "A sunset signature mocktail bar fits the celebration mood and can comfortably stay under ₹8,000."}
+        </p>
+        <button className="text-link" onClick={() => go("planner")}>
+          Build this into the plan <Icon name="arrow" size={16}/>
+        </button>
+      </article>
     </section>
+
     <section className="metrics">
-      <article><span>Total planned</span><strong>{money(planned)}</strong><small>Across 3 events</small></article>
-      <article className="yellow"><span>Actual expenses</span><strong>{money(113500)}</strong><small>18% of planned</small></article>
-      <article className="green"><span>Tasks completed</span><strong>{completed}<i> / {tasks.length}</i></strong><small>Keep the momentum</small></article>
-      <article className="blue"><span>Avg. progress</span><strong>50%</strong><Progress value={50}/></article>
-    </section>
-    <div className="section-head"><div><span className="eyebrow">IN MOTION</span><h2>Upcoming events</h2></div><button className="text-link" onClick={() => go("events")}>View all <Icon name="arrow" size={16}/></button></div>
-    <section className="event-row">{events.map((e, i) => <button className={`event-card ${e.tone}`} key={e.id} onClick={() => go("events")}><div className="date-tile"><b>{new Date(e.date).toLocaleDateString("en", { day: "2-digit" })}</b><span>{new Date(e.date).toLocaleDateString("en", { month: "short" })}</span></div><div><small>{e.type}</small><h3>{e.name}</h3><p>{e.location}</p></div><div className="event-progress"><b>{e.progress}%</b><Progress value={e.progress}/><span>{day(e.date)} days to go</span></div><span className="round-arrow">↗</span></button>)}</section>
-    <section className="lower-grid">
-      <article className="panel"><div className="section-head compact"><div><span className="eyebrow">THIS WEEK</span><h2>Next on your list</h2></div><button className="text-link" onClick={() => go("tasks")}>All tasks</button></div>
-        <div className="task-list">{tasks.slice(0, 4).map(t => <label className={`task ${t.done ? "done" : ""}`} key={t.id}><input type="checkbox" checked={t.done} onChange={() => setTasks(tasks.map(x => x.id === t.id ? { ...x, done: !x.done } : x))}/><span className="custom-check"/><span><b>{t.title}</b><small>{t.event}</small></span><time>{t.due}</time></label>)}</div>
+      <article>
+        <span>Total planned</span>
+        <strong>{money(planned)}</strong>
+        <small>Across {events.length} {events.length === 1 ? "event" : "events"}</small>
       </article>
-      <article className="panel spending"><div className="section-head compact"><div><span className="eyebrow">MONEY MATTERS</span><h2>Budget pulse</h2></div><span className="pill">Healthy</span></div>
-        <div className="donut" style={{"--p":"65%"} as React.CSSProperties}><div><strong>35%</strong><span>used</span></div></div>
-        <div className="legend"><p><i className="dot ink"/>Committed <b>₹1.13L</b></p><p><i className="dot pale"/>Remaining <b>₹2.07L</b></p></div>
+      <article className={actualExpenses > planned ? "warning" : "yellow"}>
+        <span>Actual expenses</span>
+        <strong>{money(actualExpenses)}</strong>
+        <small>{planned > 0 ? `${percentUtilized}% of planned` : "0% utilized"}</small>
+      </article>
+      <article className="green">
+        <span>Tasks completed</span>
+        <strong>{completed}<i> / {tasks.length}</i></strong>
+        <small>{tasks.length > 0 ? `${Math.round((completed / tasks.length) * 100)}% done` : "Keep momentum"}</small>
+      </article>
+      <article className="blue">
+        <span>Avg. progress</span>
+        <strong>{avgProgress}%</strong>
+        <Progress value={avgProgress}/>
+      </article>
+    </section>
+
+    <div className="section-head">
+      <div>
+        <span className="eyebrow">IN MOTION</span>
+        <h2>Upcoming events</h2>
+      </div>
+      <button className="text-link" onClick={() => go("events")}>
+        View all <Icon name="arrow" size={16}/>
+      </button>
+    </div>
+
+    {events.length > 0 ? (
+      <section className="event-row">
+        {events.map((e) => (
+          <button className={`event-card ${e.tone}`} key={e.id} onClick={() => go("events")}>
+            <div className="date-tile">
+              <b>{new Date(e.date).toLocaleDateString("en", { day: "2-digit" })}</b>
+              <span>{new Date(e.date).toLocaleDateString("en", { month: "short" })}</span>
+            </div>
+            <div>
+              <small>{e.type}</small>
+              <h3>{e.name}</h3>
+              <p>{e.location}</p>
+            </div>
+            <div className="event-progress">
+              <b>{e.progress}%</b>
+              <Progress value={e.progress}/>
+              <span>{day(e.date)} days to go</span>
+            </div>
+            <span className="round-arrow">↗</span>
+          </button>
+        ))}
+      </section>
+    ) : (
+      <div className="empty-state" style={{ marginBottom: "48px" }}>
+        <div className="empty-state-icon"><Icon name="calendar" size={32}/></div>
+        <h3>No events added yet</h3>
+        <p>Create a wedding, birthday, or community celebration to get tailored timelines and expense tracking.</p>
+        <Button onClick={() => go("planner")}><Icon name="plus"/> Plan an event</Button>
+      </div>
+    )}
+
+    <section className="lower-grid">
+      <article className="panel">
+        <div className="section-head compact">
+          <div><span className="eyebrow">THIS WEEK</span><h2>Next on your list</h2></div>
+          <button className="text-link" onClick={() => go("tasks")}>All tasks</button>
+        </div>
+        {tasks.length > 0 ? (
+          <div className="task-list">
+            {tasks.slice(0, 4).map(t => (
+              <label className={`task ${t.done ? "done" : ""}`} key={t.id}>
+                <input
+                  type="checkbox"
+                  checked={t.done}
+                  onChange={() => setTasks(tasks.map(x => x.id === t.id ? { ...x, done: !x.done } : x))}
+                />
+                <span className="custom-check"/>
+                <span><b>{t.title}</b><small>{t.event}</small></span>
+                <time>{t.due}</time>
+              </label>
+            ))}
+          </div>
+        ) : (
+          <p style={{ color: "var(--muted)", fontSize: "13px", padding: "16px 0" }}>
+            All caught up! No active tasks. Add items in Checklist & timeline.
+          </p>
+        )}
+      </article>
+
+      <article className="panel spending">
+        <div className="section-head compact">
+          <div><span className="eyebrow">MONEY MATTERS</span><h2>Budget pulse</h2></div>
+          <span className={`pill ${actualExpenses > planned ? "dark" : "success"}`}>
+            {actualExpenses > planned ? "Over budget" : "Healthy"}
+          </span>
+        </div>
+        <div className="donut" style={{"--p": `${strokePercent}%`} as React.CSSProperties}>
+          <div>
+            <strong>{strokePercent}%</strong>
+            <span>used</span>
+          </div>
+        </div>
+        <div className="legend">
+          <p><i className="dot ink"/>Committed <b>{money(actualExpenses)}</b></p>
+          <p><i className="dot pale"/>Remaining <b>{money(remainingAmount)}</b></p>
+        </div>
         <Button kind="light" onClick={() => go("budget")}>View budget</Button>
       </article>
     </section>
@@ -137,10 +366,10 @@ function EventAssistant({ event }: { event: EventItem }) {
 
   const ask = async (q?: string) => {
     const text = (q || query).trim();
-    if (!text) return;
+    if (!text || loading) return;
     setLoading(true);
     try {
-      const res = await api.chat(text, event.id, { budget: event.budget, guests: event.guests, location: event.location });
+      const res = await api.chat(text, event.id, { budget: event.budget, guests: event.guests, location: event.location, type: event.type });
       setReply({ text: res.response, isDemo: res.is_demo });
     } catch {
       setReply({
@@ -164,8 +393,9 @@ function EventAssistant({ event }: { event: EventItem }) {
       <div style={{ display: "flex", gap: "6px" }}>
         <input
           value={query}
+          aria-label={`Ask PlanzyPop Event Assistant about ${event.name}`}
           onChange={e => setQuery(e.target.value)}
-          placeholder="e.g. Ideas to save on flowers?"
+          placeholder="e.g. Ideas to save on flowers or sound?"
           onKeyDown={e => e.key === "Enter" && ask()}
           style={{ flex: 1, padding: "6px 10px", borderRadius: "8px", border: "1px solid var(--line)", background: "white", fontSize: "12px" }}
         />
@@ -174,7 +404,7 @@ function EventAssistant({ event }: { event: EventItem }) {
         </Button>
       </div>
       <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
-        {["How to save on florals?", "Menu recommendations", "Timeline sanity check"].map(suggestion => (
+        {["How to save on catering?", "Vendor quote check", "Timeline sanity check"].map(suggestion => (
           <button
             key={suggestion}
             type="button"
@@ -201,26 +431,102 @@ function EventsPage({ events, setEvents }: { events: EventItem[]; setEvents: (e:
   const [show, setShow] = useState(false);
   const [selected, setSelected] = useState<EventItem | null>(null);
   const add = (ev: FormEvent<HTMLFormElement>) => {
-    ev.preventDefault(); const f = new FormData(ev.currentTarget);
-    setEvents([...events, { id: Date.now(), name: String(f.get("name")), type: String(f.get("type")), date: String(f.get("date")), location: String(f.get("location")), guests: Number(f.get("guests")), budget: Number(f.get("budget")), progress: 8, tone: "pink" }]);
+    ev.preventDefault();
+    const f = new FormData(ev.currentTarget);
+    const newEvent: EventItem = {
+      id: Date.now(),
+      name: String(f.get("name") || "Celebration"),
+      type: String(f.get("type") || "Birthday"),
+      date: String(f.get("date") || "2026-06-01"),
+      location: String(f.get("location") || "Local Venue"),
+      guests: Number(f.get("guests")) || 50,
+      budget: Number(f.get("budget")) || 100000,
+      progress: 10,
+      tone: ["peach", "pink", "blue"][Math.floor(Math.random() * 3)] || "pink",
+    };
+    setEvents([newEvent, ...events]);
     setShow(false);
   };
+
   return <>
-    <PageTitle eyebrow="YOUR CELEBRATIONS" title={<>Plans worth <em>looking forward to.</em></>} text="Every detail, decision, and happy moment in one place." action={<Button onClick={() => setShow(true)}><Icon name="plus"/> New event</Button>}/>
-    <section className="events-grid">{events.map((e, i) => <article className={`big-event ${e.tone}`} key={e.id}>
-      <div className="event-number">0{i + 1}</div><span className="pill">{e.type}</span><h2>{e.name}</h2><p>{e.location}</p><div className="countdown"><strong>{day(e.date)}</strong><span>days<br/>to celebrate</span></div><Progress value={e.progress}/><div className="card-foot"><span>{e.progress}% planned</span><button onClick={() => setSelected(e)}>Open workspace <Icon name="arrow" size={16}/></button></div>
-    </article>)}</section>
-    {show && <Modal title="Create a new event" close={() => setShow(false)}><form onSubmit={add} className="form-grid"><Field label="Event name" name="name" required/><Field label="Event type" name="type" placeholder="Birthday, wedding..." required/><Field label="Date" name="date" type="date" required/><Field label="Location" name="location" required/><Field label="Guests" name="guests" type="number" required/><Field label="Budget (INR)" name="budget" type="number" required/><div className="form-actions"><Button kind="light" onClick={() => setShow(false)}>Cancel</Button><Button type="submit">Create event</Button></div></form></Modal>}
-    {selected && <Modal title={selected.name} close={() => setSelected(null)}><div className="workspace"><span className="pill dark">{day(selected.date)} days to go</span><h2>{selected.progress}% of your plan is ready</h2><Progress value={selected.progress}/><div className="workspace-stats"><div><span>Budget</span><b>{money(selected.budget)}</b></div><div><span>Guests</span><b>{selected.guests}</b></div><div><span>Location</span><b>{selected.location}</b></div></div><EventAssistant event={selected}/></div></Modal>}
+    <PageTitle
+      eyebrow="YOUR CELEBRATIONS"
+      title={<>Plans worth <em>looking forward to.</em></>}
+      text="Every detail, decision, and happy moment in one place."
+      action={<Button onClick={() => setShow(true)}><Icon name="plus"/> New event</Button>}
+    />
+
+    {events.length > 0 ? (
+      <section className="events-grid">
+        {events.map((e, i) => (
+          <article className={`big-event ${e.tone}`} key={e.id}>
+            <div className="event-number">0{i + 1}</div>
+            <span className="pill">{e.type}</span>
+            <h2>{e.name}</h2>
+            <p>{e.location}</p>
+            <div className="countdown">
+              <strong>{day(e.date)}</strong>
+              <span>days<br/>to celebrate</span>
+            </div>
+            <Progress value={e.progress}/>
+            <div className="card-foot">
+              <span>{e.progress}% planned</span>
+              <button onClick={() => setSelected(e)}>Open workspace <Icon name="arrow" size={16}/></button>
+            </div>
+          </article>
+        ))}
+      </section>
+    ) : (
+      <div className="empty-state">
+        <div className="empty-state-icon"><Icon name="calendar" size={32}/></div>
+        <h3>No celebrations organized yet</h3>
+        <p>Add a new celebration or use the AI event planner to craft your first event blueprint.</p>
+        <Button onClick={() => setShow(true)}><Icon name="plus"/> Create celebration</Button>
+      </div>
+    )}
+
+    {show && (
+      <Modal title="Create a new celebration" close={() => setShow(false)}>
+        <form onSubmit={add} className="form-grid">
+          <Field label="Event name" name="name" placeholder="e.g. Meera's Rooftop Birthday" required/>
+          <label className="field">
+            <span>Event type</span>
+            <select name="type" defaultValue="Birthday">
+              <option value="Birthday">Birthday</option>
+              <option value="Wedding">Wedding</option>
+              <option value="Engagement">Engagement</option>
+              <option value="Community event">Community event</option>
+              <option value="College event">College event</option>
+            </select>
+          </label>
+          <Field label="Celebration date" name="date" type="date" required/>
+          <Field label="Location" name="location" placeholder="City or venue name" required/>
+          <Field label="Expected guests" name="guests" type="number" placeholder="60" required/>
+          <Field label="Total budget (INR ₹)" name="budget" type="number" placeholder="150000" required/>
+          <div className="form-actions">
+            <Button kind="light" onClick={() => setShow(false)}>Cancel</Button>
+            <Button type="submit">Create event</Button>
+          </div>
+        </form>
+      </Modal>
+    )}
+
+    {selected && (
+      <Modal title={selected.name} close={() => setSelected(null)}>
+        <div className="workspace">
+          <span className="pill dark">{day(selected.date)} days to go</span>
+          <h2>{selected.progress}% of your plan is ready</h2>
+          <Progress value={selected.progress}/>
+          <div className="workspace-stats">
+            <div><span>Budget</span><b>{money(selected.budget)}</b></div>
+            <div><span>Guests</span><b>{selected.guests}</b></div>
+            <div><span>Location</span><b>{selected.location}</b></div>
+          </div>
+          <EventAssistant event={selected}/>
+        </div>
+      </Modal>
+    )}
   </>;
-}
-
-function Field({ label, name, type = "text", placeholder, required = false, defaultValue, value, onChange }: { label: string; name: string; type?: string; placeholder?: string; required?: boolean; defaultValue?: string | number; value?: string | number; onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void }) {
-  return <label className="field"><span>{label}</span><input name={name} type={type} placeholder={placeholder} required={required} defaultValue={defaultValue} value={value} onChange={onChange}/></label>;
-}
-
-function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={close}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={e => e.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button aria-label="Close dialog" onClick={close}>×</button></div>{children}</section></div>;
 }
 
 const defaultCuratedPlan: PlanResponse = {
@@ -287,6 +593,7 @@ function Planner({
   }, []);
 
   const generate = async () => {
+    if (loading) return;
     setLoading(true);
     try {
       const res = await api.generatePlan({
@@ -310,7 +617,7 @@ function Planner({
       setPlan(
         normalizePlan({
           ...defaultCuratedPlan,
-          concept_title: `${eventName || "Celebration"} — Sunset in Bloom`,
+          concept_title: `${eventName || "Celebration"} — Tailored Experience`,
           concept_description: `A curated celebration tailored for ${eventName || "your celebration"} with ${guests} guests in ${location}.`,
           budget_allocation: defaultCuratedPlan.budget_allocation.map(item => ({
             ...item,
@@ -371,7 +678,16 @@ function Planner({
           <p className="intro">The simple details that make every celebration unique.</p>
           <div className="form-grid">
             <Field label="Event name" name="event" placeholder="e.g. Tara's garden birthday" value={eventName} onChange={e => setEventName(e.target.value)} required/>
-            <label className="field"><span>Event type</span><select value={eventType} onChange={e => setEventType(e.target.value)}><option>Birthday</option><option>Wedding</option><option>Engagement</option><option>College event</option></select></label>
+            <label className="field">
+              <span>Event type</span>
+              <select value={eventType} onChange={e => setEventType(e.target.value)}>
+                <option value="Birthday">Birthday</option>
+                <option value="Wedding">Wedding</option>
+                <option value="Engagement">Engagement</option>
+                <option value="Community event">Community event</option>
+                <option value="College event">College event</option>
+              </select>
+            </label>
             <Field label="Date" name="date" type="date" value={date} onChange={e => setDate(e.target.value)}/>
             <Field label="City or venue" name="location" placeholder="Jaipur, Rajasthan" value={location} onChange={e => setLocation(e.target.value)}/>
             <Field label="Expected guests" name="guests" type="number" placeholder="80" value={guests} onChange={e => setGuests(Number(e.target.value))}/>
@@ -383,12 +699,21 @@ function Planner({
           <h2>Shape the feeling.</h2>
           <p className="intro">A few preferences help us build a plan that feels like yours.</p>
           <div className="form-grid">
-            <Field label="Budget in INR" name="budget" type="number" placeholder="150000" value={budget} onChange={e => setBudget(Number(e.target.value))}/>
+            <Field label="Budget in INR (₹)" name="budget" type="number" placeholder="150000" value={budget} onChange={e => setBudget(Number(e.target.value))}/>
             <label className="field"><span>Budget flexibility</span><select><option>Keep it strict</option><option>Up to 10% flexible</option><option>Show me options</option></select></label>
-            <label className="field"><span>Celebration style</span><select value={style} onChange={e => setStyle(e.target.value)}><option>Warm & intimate</option><option>Bold & energetic</option><option>Classic & elegant</option><option>Playful & colourful</option></select></label>
+            <label className="field"><span>Celebration style</span><select value={style} onChange={e => setStyle(e.target.value)}><option>Warm & intimate</option><option>Bold & energetic</option><option>Classic & elegant</option><option>Playful & colourful</option><option>Inclusive & uplifting</option></select></label>
             <label className="field"><span>Setting</span><select value={setting} onChange={e => setSetting(e.target.value)}><option>Outdoor</option><option>Indoor</option><option>Open to either</option></select></label>
             <label className="field"><span>Dietary preferences</span><select value={dietary} onChange={e => setDietary(e.target.value)}><option>Vegetarian</option><option>Mixed menu</option><option>Vegan</option><option>Jain options</option></select></label>
-            <label className="field"><span>Main priority</span><select value={priority} onChange={e => setPriority(e.target.value)}><option>Guest experience</option><option>Décor & atmosphere</option><option>Food</option><option>Staying on budget</option></select></label>
+            <label className="field">
+              <span>Main priority</span>
+              <select value={priority} onChange={e => setPriority(e.target.value)}>
+                <option value="Guest experience">Guest experience</option>
+                <option value="Community logistics">Community logistics & permits</option>
+                <option value="Décor & atmosphere">Décor & atmosphere</option>
+                <option value="Food">Food & refreshments</option>
+                <option value="Staying on budget">Staying on budget</option>
+              </select>
+            </label>
           </div>
           <div className="form-actions"><Button kind="light" onClick={() => setStep(1)}>Back</Button><Button onClick={generate} disabled={loading}>{loading ? <><span className="spinner"/> PlanzyPop is crafting your plan...</> : <><Icon name="spark"/> Generate celebration plan</>}</Button></div>
         </>}
@@ -484,7 +809,7 @@ function PlanResult({
     {plan.error_message && (
       <div style={{ margin: "16px 0", padding: "10px 14px", borderRadius: "12px", background: "#fff2e8", border: "1px solid #f0957e", fontSize: "12px", display: "flex", alignItems: "center", gap: "8px", color: "var(--ink)" }}>
         <Icon name="spark"/>
-        <span><b>Fallback Notice:</b> {plan.error_message}</span>
+        <span><b>Notice:</b> {plan.error_message}</span>
       </div>
     )}
 
@@ -524,31 +849,189 @@ function PlanResult({
     <div className="form-actions" style={{ marginTop: "24px" }}>
       <Button kind="light" onClick={onEditInputs}>Adjust inputs</Button>
       <Button kind="light" onClick={regenerate} disabled={loading}>{loading ? <><span className="spinner"/> Regenerating...</> : "Regenerate"}</Button>
-      <Button onClick={handleSave} disabled={saved}>{saved ? "✓ Saved to My Events" : "Save plan"}</Button>
+      <Button onClick={handleSave} disabled={saved}>{saved ? "✓ Saved to My Events & Budget" : "Save plan"}</Button>
       <Button kind="accent" onClick={exportPlan}>Export</Button>
-      {saved && go && <Button kind="light" onClick={() => go("events")}>View in My Events →</Button>}
+      {saved && go && <Button kind="light" onClick={() => go("budget")}>View in Budget Tracker →</Button>}
     </div>
   </>;
 }
 
 function Budget({ expenses, setExpenses }: { expenses: Expense[]; setExpenses: (e: Expense[]) => void }) {
-  const [show, setShow] = useState(false); const planned = expenses.reduce((a, e) => a + e.planned, 0); const actual = expenses.reduce((a, e) => a + e.actual, 0);
-  const add = (ev: FormEvent<HTMLFormElement>) => { ev.preventDefault(); const f = new FormData(ev.currentTarget); setExpenses([...expenses, { id: Date.now(), category: String(f.get("category")), item: String(f.get("item")), planned: Number(f.get("planned")), actual: Number(f.get("actual")) }]); setShow(false); };
-  return <><PageTitle eyebrow="CLEAR NUMBERS, CALMER PLANNING" title={<>Your budget, <em>at a glance.</em></>} text="Deterministic totals update the moment you add or remove an expense." action={<Button onClick={() => setShow(true)}><Icon name="plus"/> Add expense</Button>}/>
-    <section className="metrics budget-metrics"><article><span>Planned</span><strong>{money(planned)}</strong><small>Current categories</small></article><article className={actual > planned ? "warning" : "yellow"}><span>Actual</span><strong>{money(actual)}</strong><small>{actual > planned ? "Over planned amount" : `${Math.round(actual / planned * 100)}% utilized`}</small></article><article className="green"><span>Remaining</span><strong>{money(planned - actual)}</strong><small>Updates instantly</small></article></section>
-    {actual > planned && <div className="alert" role="alert">Your actual expenses are above the planned total. Review high-spend categories before confirming new vendors.</div>}
-    <section className="panel"><div className="section-head compact"><div><span className="eyebrow">CATEGORY VIEW</span><h2>Planned vs. actual</h2></div></div><div className="expense-table"><div className="tr table-head"><span>Expense</span><span>Category</span><span>Planned</span><span>Actual</span><span/></div>{expenses.map(e => <div className="tr" key={e.id}><b>{e.item}</b><span><i className="dot ink"/>{e.category}</span><span>{money(e.planned)}</span><strong className={e.actual > e.planned ? "over" : ""}>{money(e.actual)}</strong><button aria-label={`Delete ${e.item}`} onClick={() => setExpenses(expenses.filter(x => x.id !== e.id))}><Icon name="trash" size={17}/></button></div>)}</div></section>
-    {show && <Modal title="Add an expense" close={() => setShow(false)}><form className="form-grid" onSubmit={add}><Field label="Item" name="item" required/><Field label="Category" name="category" required/><Field label="Planned amount" name="planned" type="number" required/><Field label="Actual amount" name="actual" type="number" required/><div className="form-actions"><Button type="submit">Add expense</Button></div></form></Modal>}
+  const [show, setShow] = useState(false);
+  const planned = expenses.reduce((a, e) => a + (Number(e.planned) || 0), 0);
+  const actual = expenses.reduce((a, e) => a + (Number(e.actual) || 0), 0);
+
+  const add = (ev: FormEvent<HTMLFormElement>) => {
+    ev.preventDefault();
+    const f = new FormData(ev.currentTarget);
+    setExpenses([
+      ...expenses,
+      {
+        id: Date.now(),
+        category: String(f.get("category") || "General"),
+        item: String(f.get("item") || "Expense item"),
+        planned: Number(f.get("planned")) || 0,
+        actual: Number(f.get("actual")) || 0,
+      },
+    ]);
+    setShow(false);
+  };
+
+  const utilizationText = planned > 0 ? `${Math.round((actual / planned) * 100)}% utilized` : "0% utilized";
+
+  return <>
+    <PageTitle
+      eyebrow="CLEAR NUMBERS, CALMER PLANNING"
+      title={<>Your budget, <em>at a glance.</em></>}
+      text="Deterministic totals update the moment you add, edit, or remove an expense."
+      action={<Button onClick={() => setShow(true)}><Icon name="plus"/> Add expense</Button>}
+    />
+
+    <section className="metrics budget-metrics">
+      <article>
+        <span>Planned</span>
+        <strong>{money(planned)}</strong>
+        <small>{expenses.length} categories tracked</small>
+      </article>
+      <article className={actual > planned ? "warning" : "yellow"}>
+        <span>Actual</span>
+        <strong>{money(actual)}</strong>
+        <small>{actual > planned ? "Over planned amount" : utilizationText}</small>
+      </article>
+      <article className="green">
+        <span>Remaining</span>
+        <strong>{money(Math.max(0, planned - actual))}</strong>
+        <small>Updates in real time</small>
+      </article>
+    </section>
+
+    {actual > planned && (
+      <div className="alert" role="alert">
+        Your actual expenses are above the planned total. Review high-spend categories before confirming new commitments.
+      </div>
+    )}
+
+    {expenses.length > 0 ? (
+      <section className="panel">
+        <div className="section-head compact">
+          <div><span className="eyebrow">CATEGORY VIEW</span><h2>Planned vs. actual</h2></div>
+        </div>
+        <div className="expense-table">
+          <div className="tr table-head">
+            <span>Expense</span>
+            <span>Category</span>
+            <span>Planned</span>
+            <span>Actual</span>
+            <span/>
+          </div>
+          {expenses.map(e => (
+            <div className="tr" key={e.id}>
+              <b>{e.item}</b>
+              <span><i className="dot ink"/>{e.category}</span>
+              <span>{money(e.planned)}</span>
+              <strong className={e.actual > e.planned ? "over" : ""}>{money(e.actual)}</strong>
+              <button aria-label={`Delete ${e.item}`} onClick={() => setExpenses(expenses.filter(x => x.id !== e.id))}>
+                <Icon name="trash" size={17}/>
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+    ) : (
+      <div className="empty-state">
+        <div className="empty-state-icon"><Icon name="wallet" size={32}/></div>
+        <h3>No budget expenses tracked yet</h3>
+        <p>Add manual expense estimates or generate an AI celebration plan to automatically import tailored category splits.</p>
+        <Button onClick={() => setShow(true)}><Icon name="plus"/> Add an expense</Button>
+      </div>
+    )}
+
+    {show && (
+      <Modal title="Add an expense" close={() => setShow(false)}>
+        <form className="form-grid" onSubmit={add}>
+          <Field label="Item / Service description" name="item" placeholder="e.g. Venue advance deposit" required/>
+          <Field label="Category" name="category" placeholder="Venue, Food, Florals, Sound..." required/>
+          <Field label="Planned amount (INR ₹)" name="planned" type="number" placeholder="50000" required/>
+          <Field label="Actual amount spent so far (INR ₹)" name="actual" type="number" placeholder="0" required/>
+          <div className="form-actions">
+            <Button kind="light" onClick={() => setShow(false)}>Cancel</Button>
+            <Button type="submit">Add expense</Button>
+          </div>
+        </form>
+      </Modal>
+    )}
   </>;
 }
 
 function TasksPage({ tasks, setTasks }: { tasks: Task[]; setTasks: (t: Task[]) => void }) {
-  const [filter, setFilter] = useState("All"); const [text, setText] = useState("");
+  const [filter, setFilter] = useState("All");
+  const [text, setText] = useState("");
   const visible = tasks.filter(t => filter === "All" || (filter === "Done" ? t.done : !t.done));
-  const add = () => { if (text.trim()) { setTasks([...tasks, { id: Date.now(), title: text, event: "General planning", due: "No date", done: false }]); setText(""); } };
-  return <><PageTitle eyebrow="ONE STEP AT A TIME" title={<>A calmer way to <em>get it done.</em></>} text={`${tasks.filter(t => t.done).length} of ${tasks.length} tasks complete across your celebrations.`}/>
-    <section className="panel task-page"><div className="task-tools"><div className="add-task"><input value={text} onChange={e => setText(e.target.value)} placeholder="Add a task..." onKeyDown={e => e.key === "Enter" && add()}/><Button onClick={add}><Icon name="plus"/> Add</Button></div><div className="filter-pills">{["All","Open","Done"].map(x => <button key={x} className={filter === x ? "active" : ""} onClick={() => setFilter(x)}>{x}</button>)}</div></div>
-      <div className="timeline-list">{visible.map((t, i) => <div className={`timeline-task ${t.done ? "done" : ""}`} key={t.id}><div className="timeline-mark"><span>{t.done ? "✓" : i + 1}</span></div><label><input type="checkbox" checked={t.done} onChange={() => setTasks(tasks.map(x => x.id === t.id ? {...x, done: !x.done} : x))}/><div><b>{t.title}</b><small>{t.event} · {t.due}</small></div></label><button onClick={() => setTasks(tasks.filter(x => x.id !== t.id))}><Icon name="trash" size={17}/></button></div>)}</div>
+
+  const add = () => {
+    if (text.trim()) {
+      setTasks([...tasks, { id: Date.now(), title: text.trim(), event: "General planning", due: "Next milestone", done: false }]);
+      setText("");
+    }
+  };
+
+  return <>
+    <PageTitle
+      eyebrow="ONE STEP AT A TIME"
+      title={<>A calmer way to <em>get it done.</em></>}
+      text={`${tasks.filter(t => t.done).length} of ${tasks.length} tasks complete across your celebrations.`}
+    />
+
+    <section className="panel task-page">
+      <div className="task-tools">
+        <div className="add-task">
+          <input
+            value={text}
+            aria-label="New task description"
+            onChange={e => setText(e.target.value)}
+            placeholder="Add a task (e.g. Schedule tasting, Confirm sound check)..."
+            onKeyDown={e => e.key === "Enter" && add()}
+          />
+          <Button onClick={add}><Icon name="plus"/> Add</Button>
+        </div>
+        <div className="filter-pills">
+          {["All", "Open", "Done"].map(x => (
+            <button key={x} className={filter === x ? "active" : ""} onClick={() => setFilter(x)}>
+              {x}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {visible.length > 0 ? (
+        <div className="timeline-list">
+          {visible.map((t, i) => (
+            <div className={`timeline-task ${t.done ? "done" : ""}`} key={t.id}>
+              <div className="timeline-mark"><span>{t.done ? "✓" : i + 1}</span></div>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={t.done}
+                  onChange={() => setTasks(tasks.map(x => x.id === t.id ? { ...x, done: !x.done } : x))}
+                />
+                <div>
+                  <b>{t.title}</b>
+                  <small>{t.event} · {t.due}</small>
+                </div>
+              </label>
+              <button aria-label={`Delete task: ${t.title}`} onClick={() => setTasks(tasks.filter(x => x.id !== t.id))}>
+                <Icon name="trash" size={17}/>
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state" style={{ margin: "20px 0" }}>
+          <div className="empty-state-icon"><Icon name="check" size={28}/></div>
+          <h3>No tasks in this view</h3>
+          <p>{filter === "All" ? "Your checklist is empty. Add a task above to begin organizing." : `No ${filter.toLowerCase()} items right now.`}</p>
+        </div>
+      )}
     </section>
   </>;
 }
@@ -562,10 +1045,8 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
   const [addError, setAddError] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
 
-  // Helper to identify demo records reliably
   const isSample = (v: Vendor) => Boolean(v.isDemo || v.name.toLowerCase().startsWith("demo ") || v.name.toLowerCase().startsWith("sample "));
 
-  // Calculations for budget integration
   const totalQuoted = useMemo(() => vendors.reduce((acc, v) => acc + (Number(v.quote) || 0), 0), [vendors]);
   const bookedTotal = useMemo(() => vendors.filter(v => v.status === "Booked").reduce((acc, v) => acc + (Number(v.quote) || 0), 0), [vendors]);
   const bookedCount = useMemo(() => vendors.filter(v => v.status === "Booked").length, [vendors]);
@@ -573,11 +1054,10 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
   const consideringCount = useMemo(() => vendors.filter(v => v.status === "Considering").length, [vendors]);
   const benchmarkBudget = useMemo(() => events.reduce((acc, e) => acc + (Number(e.budget) || 0), 0), [events]);
 
-  // Filtering
   const filtered = vendors.filter(v => {
     const matchesFilter = filter === "All" || v.status === filter;
     const q = search.trim().toLowerCase();
-    const matchesSearch = !q || `${v.name} ${v.category} ${v.notes || ""}`.toLowerCase().includes(q);
+    const matchesSearch = !q || `${v.name} ${v.category} ${v.notes || ""} ${v.eventName || ""}`.toLowerCase().includes(q);
     return matchesFilter && matchesSearch;
   });
 
@@ -590,6 +1070,7 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
     const quoteRaw = Number(f.get("quote"));
     const phone = String(f.get("phone") || "").trim();
     const notes = String(f.get("notes") || "").trim();
+    const eventName = String(f.get("eventName") || "").trim();
     const status = (String(f.get("status") || "Considering")) as "Considering" | "Booked";
 
     if (!name) {
@@ -612,6 +1093,7 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
       quote: quoteRaw,
       phone: phone || undefined,
       notes: notes || undefined,
+      eventName: eventName || undefined,
       status,
       isDemo: false,
     };
@@ -630,6 +1112,7 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
     const quoteRaw = Number(f.get("quote"));
     const phone = String(f.get("phone") || "").trim();
     const notes = String(f.get("notes") || "").trim();
+    const eventName = String(f.get("eventName") || "").trim();
     const status = (String(f.get("status") || "Considering")) as "Considering" | "Booked";
 
     if (!name) {
@@ -652,6 +1135,7 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
       quote: quoteRaw,
       phone: phone || undefined,
       notes: notes || undefined,
+      eventName: eventName || undefined,
       status,
     } : v));
     setEditingVendor(null);
@@ -713,6 +1197,7 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
         <Icon name="search"/>
         <input
           value={search}
+          aria-label="Search vendors by name, category, notes, or event"
           onChange={e => setSearch(e.target.value)}
           placeholder="Search vendors, categories, or notes..."
         />
@@ -750,7 +1235,9 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
           </div>
 
           <h3 style={{ margin: "6px 0 2px" }}>{v.name}</h3>
-          <p style={{ margin: "0 0 8px", fontSize: "11px", color: "var(--muted)" }}>{v.category}</p>
+          <p style={{ margin: "0 0 8px", fontSize: "11px", color: "var(--muted)" }}>
+            {v.category}{v.eventName ? ` · ${v.eventName}` : ""}
+          </p>
           {v.notes && (
             <p style={{ fontSize: "11px", color: "#666", margin: "0 0 10px", lineHeight: "1.4" }}>
               {v.notes}
@@ -795,14 +1282,12 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
       ))}
 
       {filtered.length === 0 && (
-        <div style={{ textAlign: "center", padding: "48px 20px", background: "var(--surface)", border: "1px dashed var(--line)", borderRadius: "20px", gridColumn: "1 / -1" }}>
-          <div style={{ display: "inline-block", padding: "12px", background: "#f5f2eb", borderRadius: "50%", marginBottom: "12px" }}>
-            <Icon name="users" size={28}/>
-          </div>
-          <h3 style={{ margin: "0 0 6px" }}>No vendors found</h3>
-          <p style={{ color: "var(--muted)", fontSize: "13px", margin: "0 0 16px" }}>
+        <div className="empty-state">
+          <div className="empty-state-icon"><Icon name="users" size={28}/></div>
+          <h3>No vendors found</h3>
+          <p>
             {vendors.length === 0
-              ? "No vendors added yet. Click 'Add vendor' to start building your creative team."
+              ? "No vendors added yet. Click 'Add vendor' to start assembling your creative celebration team."
               : "No vendors match your current search and filter criteria."}
           </p>
           {vendors.length > 0 && (
@@ -819,9 +1304,10 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
         <form className="form-grid" onSubmit={handleAdd}>
           {addError && <div className="alert" role="alert" style={{ gridColumn: "1 / -1", margin: 0 }}>{addError}</div>}
           <Field label="Vendor / Business name" name="name" placeholder="e.g. Bloom & Petals Studio" required/>
-          <Field label="Category" name="category" placeholder="e.g. Florals, Catering, Photography" required/>
+          <Field label="Category" name="category" placeholder="e.g. Florals, Catering, Photography, Sound" required/>
           <Field label="Quote in INR (₹)" name="quote" type="number" placeholder="e.g. 35000" required/>
           <Field label="Contact details (phone or email)" name="phone" placeholder="e.g. +91 98765 43210"/>
+          <Field label="Associated event (optional)" name="eventName" placeholder="e.g. Anaya's 21st, Community Mela"/>
           <label className="field" style={{ gridColumn: "1 / -1" }}>
             <span>Initial booking status</span>
             <select name="status" defaultValue="Considering">
@@ -849,6 +1335,7 @@ function Vendors({ vendors, setVendors, events = [] }: { vendors: Vendor[]; setV
           <Field label="Category" name="category" defaultValue={editingVendor.category} required/>
           <Field label="Quote in INR (₹)" name="quote" type="number" defaultValue={editingVendor.quote} required/>
           <Field label="Contact details" name="phone" defaultValue={editingVendor.phone || ""}/>
+          <Field label="Associated event (optional)" name="eventName" defaultValue={editingVendor.eventName || ""}/>
           <label className="field" style={{ gridColumn: "1 / -1" }}>
             <span>Booking status</span>
             <select name="status" defaultValue={editingVendor.status}>
@@ -892,35 +1379,128 @@ const ideas = [
   { id: 1, title: "Marigold twilight", cat: "Wedding", desc: "Layered fabric, local flowers, and warm pendant lights.", colors: ["#ED8B75","#F4CD68","#61744B"], range: "₹1.2L–₹2.4L" },
   { id: 2, title: "Pastel garden table", cat: "Birthday", desc: "Soft linen, playful menus, and shared-table dining.", colors: ["#F2B5C9","#C4CDED","#F5E6C8"], range: "₹45K–₹90K" },
   { id: 3, title: "Courtyard sangeet", cat: "Engagement", desc: "A colour-rich canopy with an intimate dance floor.", colors: ["#A85584","#F5A1C5","#D9C76C"], range: "₹1.8L–₹3.5L" },
-  { id: 4, title: "Campus after dark", cat: "College", desc: "String lights, open seating, and bold wayfinding.", colors: ["#252340","#7A88CC","#EC8E82"], range: "₹2L–₹5L" },
+  { id: 4, title: "Greenfield canopy mela", cat: "Community", desc: "Acoustic stage, community stalls, and eco-friendly hydration stations.", colors: ["#2A9D8F","#E9C46A","#F4A261"], range: "₹1L–₹3L" },
 ];
 
 function Inspiration({ go }: { go: (p: Page) => void }) {
-  const [faves, setFaves] = useStored<number[]>("planora-faves", []); const [category, setCategory] = useState("All");
+  const [faves, setFaves] = useStored<number[]>("planora-faves", []);
+  const [category, setCategory] = useState("All");
   const visible = ideas.filter(i => category === "All" || i.cat === category);
-  return <><PageTitle eyebrow="IDEAS TO MAKE YOUR OWN" title={<>Find your <em>celebration feeling.</em></>} text="A curated starting point for colours, atmosphere, and thoughtful details."/>
-    <div className="filter-pills gallery-filter">{["All","Wedding","Birthday","Engagement","College"].map(x => <button className={category === x ? "active" : ""} onClick={() => setCategory(x)} key={x}>{x}</button>)}</div>
+
+  return <>
+    <PageTitle eyebrow="IDEAS TO MAKE YOUR OWN" title={<>Find your <em>celebration feeling.</em></>} text="A curated starting point for colours, atmosphere, and thoughtful details."/>
+    <div className="filter-pills gallery-filter">{["All","Wedding","Birthday","Engagement","Community"].map(x => <button className={category === x ? "active" : ""} onClick={() => setCategory(x)} key={x}>{x}</button>)}</div>
     <section className="gallery">{visible.map((idea, i) => <article className="idea" key={idea.id}><div className="idea-image"><img src={photos[i % photos.length]} alt={`${idea.title} celebration inspiration`}/><button className={faves.includes(idea.id) ? "liked" : ""} aria-label="Favorite idea" onClick={() => setFaves(faves.includes(idea.id) ? faves.filter(x => x !== idea.id) : [...faves, idea.id])}><Icon name="heart" fill={faves.includes(idea.id) ? "currentColor" : "none"}/></button><span>{idea.cat}</span></div><div className="idea-body"><h3>{idea.title}</h3><p>{idea.desc}</p><div className="idea-meta"><div className="swatches">{idea.colors.map(c => <i key={c} style={{background:c}}/>)}</div><b>{idea.range}</b></div><Button kind="light" onClick={() => go("planner")}>Use this idea <Icon name="arrow" size={16}/></Button></div></article>)}</section>
     <p className="photo-credit">Photography sourced from Unsplash. Images are for inspiration only.</p>
   </>;
 }
 
-function Settings({ clear }: { clear: () => void }) {
-  const [confirm, setConfirm] = useState(false); const [saved, setSaved] = useState(false);
-  const exportData = () => { const blob = new Blob([JSON.stringify({ events: JSON.parse(localStorage.getItem("planora-events") || "[]"), tasks: JSON.parse(localStorage.getItem("planora-tasks") || "[]"), vendors: JSON.parse(localStorage.getItem("planora-vendors") || "[]"), expenses: JSON.parse(localStorage.getItem("planora-expenses") || "[]") }, null, 2)], {type:"application/json"}); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "planzypop-data.json"; a.click(); URL.revokeObjectURL(a.href); };
-  return <><PageTitle eyebrow="MAKE IT YOURS" title={<>Preferences, <em>your way.</em></>} text="Profile, planning defaults, notifications, and your local demonstration data."/>
-    <section className="settings-grid"><article className="panel"><span className="eyebrow">PROFILE & DEFAULTS</span><h2>Planning preferences</h2><div className="form-grid settings-form"><Field label="Display name" name="name" defaultValue="Meera Sharma"/><Field label="Default guest count" name="guests" type="number" defaultValue={80}/><label className="field"><span>Currency</span><select defaultValue="INR"><option value="INR">INR — Indian Rupee</option></select></label><label className="field"><span>Celebration style</span><select><option>Warm & intimate</option><option>Bold & energetic</option><option>Classic & elegant</option></select></label></div><Button onClick={() => {setSaved(true); setTimeout(() => setSaved(false), 1800)}}>{saved ? "Preferences saved" : "Save changes"}</Button></article>
-    <article className="panel"><span className="eyebrow">NOTIFICATIONS</span><h2>Gentle reminders</h2>{["Upcoming task reminders","Budget threshold alerts","Weekly planning digest"].map((x,i) => <label className="toggle-row" key={x}><span><b>{x}</b><small>{i === 0 ? "One day before a task is due" : i === 1 ? "When a category reaches 90%" : "A short Sunday overview"}</small></span><input type="checkbox" defaultChecked={i < 2}/><i/></label>)}</article>
-    <article className="panel data-panel"><span className="eyebrow">YOUR DATA</span><h2>Export or reset</h2><p>Everything in PlanzyPop AI stays in this browser. Export a JSON copy or clear it to return to the sample experience.</p><div className="form-actions"><Button kind="light" onClick={exportData}>Export JSON</Button><button className="danger-link" onClick={() => setConfirm(true)}>Clear demonstration data</button></div></article></section>
-    {confirm && <Modal title="Clear demonstration data?" close={() => setConfirm(false)}><p>This removes your locally saved events, tasks, expenses, vendors, and favorites from PlanzyPop AI. This cannot be undone.</p><div className="form-actions"><Button kind="light" onClick={() => setConfirm(false)}>Keep my data</Button><button className="danger-btn" onClick={() => {clear(); setConfirm(false)}}>Yes, clear data</button></div></Modal>}
+function Settings({
+  profile,
+  setProfile,
+  clear,
+}: {
+  profile: UserProfile;
+  setProfile: (p: UserProfile) => void;
+  clear: () => void;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [name, setName] = useState(profile.name);
+  const [guests, setGuests] = useState(profile.guests);
+  const [style, setStyle] = useState(profile.style);
+
+  const saveSettings = (e: FormEvent) => {
+    e.preventDefault();
+    setProfile({ ...profile, name: name.trim() || "Meera Sharma", guests: Number(guests) || 80, style });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify({
+      profile,
+      events: JSON.parse(localStorage.getItem("planora-events") || "[]"),
+      tasks: JSON.parse(localStorage.getItem("planora-tasks") || "[]"),
+      vendors: JSON.parse(localStorage.getItem("planora-vendors") || "[]"),
+      expenses: JSON.parse(localStorage.getItem("planora-expenses") || "[]"),
+    }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "planzypop-data.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  return <>
+    <PageTitle eyebrow="MAKE IT YOURS" title={<>Preferences, <em>your way.</em></>} text="Profile, planning defaults, notifications, and your local demonstration data."/>
+    <section className="settings-grid">
+      <article className="panel">
+        <span className="eyebrow">PROFILE & DEFAULTS</span>
+        <h2>Planning preferences</h2>
+        <form onSubmit={saveSettings} className="form-grid settings-form">
+          <Field label="Display name" name="name" value={name} onChange={e => setName(e.target.value)}/>
+          <Field label="Default guest count" name="guests" type="number" value={guests} onChange={e => setGuests(Number(e.target.value))}/>
+          <label className="field"><span>Currency</span><select defaultValue="INR"><option value="INR">INR — Indian Rupee (₹)</option></select></label>
+          <label className="field">
+            <span>Preferred celebration style</span>
+            <select value={style} onChange={e => setStyle(e.target.value)}>
+              <option value="Warm & intimate">Warm & intimate</option>
+              <option value="Bold & energetic">Bold & energetic</option>
+              <option value="Classic & elegant">Classic & elegant</option>
+              <option value="Inclusive & uplifting">Inclusive & uplifting</option>
+            </select>
+          </label>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <Button type="submit">{saved ? "✓ Preferences saved" : "Save changes"}</Button>
+          </div>
+        </form>
+      </article>
+
+      <article className="panel">
+        <span className="eyebrow">NOTIFICATIONS</span>
+        <h2>Gentle reminders</h2>
+        {["Upcoming task reminders", "Budget threshold alerts", "Weekly planning digest"].map((x, i) => (
+          <label className="toggle-row" key={x}>
+            <span><b>{x}</b><small>{i === 0 ? "One day before a task is due" : i === 1 ? "When a category reaches 90%" : "A short Sunday overview"}</small></span>
+            <input type="checkbox" defaultChecked={i < 2}/><i/>
+          </label>
+        ))}
+      </article>
+
+      <article className="panel data-panel">
+        <span className="eyebrow">YOUR DATA</span>
+        <h2>Export or reset</h2>
+        <p>Everything in PlanzyPop AI stays securely in this browser. Export a JSON copy or reset demonstration data to default.</p>
+        <div className="form-actions">
+          <Button kind="light" onClick={exportData}>Export JSON</Button>
+          <button className="danger-link" onClick={() => setConfirm(true)}>Clear demonstration data</button>
+        </div>
+      </article>
+    </section>
+
+    {confirm && (
+      <Modal title="Clear demonstration data?" close={() => setConfirm(false)}>
+        <p>This removes your locally saved events, tasks, expenses, vendors, and favorites from PlanzyPop AI. This cannot be undone.</p>
+        <div className="form-actions">
+          <Button kind="light" onClick={() => setConfirm(false)}>Keep my data</Button>
+          <button className="danger-btn" onClick={() => { clear(); setConfirm(false); }}>Yes, clear data</button>
+        </div>
+      </Modal>
+    )}
   </>;
 }
 
 export default function App() {
-  const [page, setPage] = useState<Page>("overview"); const [mobileOpen, setMobileOpen] = useState(false);
+  const [page, setPage] = useState<Page>("overview");
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
-  const [events, setEvents] = useStored("planora-events", seedEvents); const [tasks, setTasks] = useStored("planora-tasks", seedTasks);
-  const [expenses, setExpenses] = useStored("planora-expenses", seedExpenses); const [vendors, setVendors] = useStored("planora-vendors", seedVendors);
+
+  const [profile, setProfile] = useStored<UserProfile>("planzypop-profile", defaultProfile);
+  const [events, setEvents] = useStored<EventItem[]>("planora-events", seedEvents);
+  const [tasks, setTasks] = useStored<Task[]>("planora-tasks", seedTasks);
+  const [expenses, setExpenses] = useStored<Expense[]>("planora-expenses", seedExpenses);
+  const [vendors, setVendors] = useStored<Vendor[]>("planora-vendors", seedVendors);
 
   useEffect(() => {
     document.title = "PlanzyPop AI — Your vibe. Your plan. Your party.";
@@ -929,8 +1509,20 @@ export default function App() {
       .catch(() => setBackendOnline(false));
   }, []);
 
-  const go = (p: Page) => { setPage(p); setMobileOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
-  const clear = () => { localStorage.clear(); setEvents(seedEvents); setTasks(seedTasks); setExpenses(seedExpenses); setVendors(seedVendors); };
+  const go = (p: Page) => {
+    setPage(p);
+    setMobileOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const clear = () => {
+    localStorage.clear();
+    setProfile(defaultProfile);
+    setEvents(seedEvents);
+    setTasks(seedTasks);
+    setExpenses(seedExpenses);
+    setVendors(seedVendors);
+  };
 
   const saveGeneratedPlan = (
     planToSave: PlanResponse,
@@ -945,10 +1537,11 @@ export default function App() {
       guests: Number(details.guests) || 80,
       budget: Number(details.budget) || 150000,
       progress: 25,
-      tone: ["pink", "blue", "rose"][Math.floor(Math.random() * 3)] || "pink",
+      tone: ["pink", "blue", "peach"][Math.floor(Math.random() * 3)] || "pink",
     };
     setEvents([newEvent, ...events]);
 
+    // Import checklist into tasks
     if (planToSave.checklist && planToSave.checklist.length > 0) {
       const newTasks: Task[] = planToSave.checklist.map((c, i) => ({
         id: Date.now() + i + 1,
@@ -959,22 +1552,84 @@ export default function App() {
       }));
       setTasks([...newTasks, ...tasks]);
     }
+
+    // Import AI budget allocation into budget tracker expenses
+    if (planToSave.budget_allocation && planToSave.budget_allocation.length > 0) {
+      const newExpenses: Expense[] = planToSave.budget_allocation.map((b, i) => ({
+        id: Date.now() + 100 + i,
+        category: b.category,
+        item: `${newEvent.name} — ${b.category}`,
+        planned: b.amount_inr,
+        actual: 0,
+        eventId: newEvent.id,
+      }));
+      setExpenses([...newExpenses, ...expenses]);
+    }
   };
 
   const content = useMemo(() => {
-    if (page === "overview") return <Overview events={events} tasks={tasks} setTasks={setTasks} go={go}/>;
+    if (page === "overview") return <Overview events={events} tasks={tasks} setTasks={setTasks} expenses={expenses} userProfile={profile} go={go}/>;
     if (page === "events") return <EventsPage events={events} setEvents={setEvents}/>;
     if (page === "planner") return <Planner onSavePlan={saveGeneratedPlan} go={go}/>;
     if (page === "budget") return <Budget expenses={expenses} setExpenses={setExpenses}/>;
     if (page === "tasks") return <TasksPage tasks={tasks} setTasks={setTasks}/>;
     if (page === "vendors") return <Vendors vendors={vendors} setVendors={setVendors} events={events}/>;
     if (page === "inspiration") return <Inspiration go={go}/>;
-    return <Settings clear={clear}/>;
-  }, [page, events, tasks, expenses, vendors]);
+    return <Settings profile={profile} setProfile={setProfile} clear={clear}/>;
+  }, [page, events, tasks, expenses, vendors, profile]);
 
-  return <div className="app-shell">
-    <aside className={`sidebar ${mobileOpen ? "open" : ""}`}><div className="brand" onClick={() => go("overview")} title="PlanzyPop AI — Your vibe. Your plan. Your party."><span className="brand-mark"><i/><i/><i/></span><b>PlanzyPop</b><small>AI</small></div><nav aria-label="Main navigation">{nav.map(n => <button key={n.id} className={page === n.id ? "active" : ""} onClick={() => go(n.id)}><Icon name={n.icon}/><span>{n.label}</span>{n.id === "tasks" && <i className="count">{tasks.filter(t => !t.done).length}</i>}</button>)}</nav><div className="sidebar-foot"><div className="mini-avatar">MS</div><div><b>Meera Sharma</b><span>PlanzyPop workspace</span></div><button onClick={() => go("settings")} aria-label="Open settings"><Icon name="settings" size={17}/></button></div></aside>
-    {mobileOpen && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)}/>}
-    <main><div className="mobile-head"><button aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu"/></button><div className="brand" title="PlanzyPop AI — Your vibe. Your plan. Your party."><span className="brand-mark"><i/><i/><i/></span><b>PlanzyPop</b><small>AI</small></div><button aria-label="Notifications"><Icon name="bell"/></button></div><div className="topbar"><div className="demo-badge"><i style={{ background: backendOnline ? "var(--green)" : "#e2933e" }}/> {backendOnline ? "BACKEND CONNECTED" : "DEMO MODE"}</div><button className="icon-btn" aria-label="Search"><Icon name="search"/></button><button className="icon-btn notification" aria-label="Notifications"><Icon name="bell"/><i/></button></div><div className="page-content">{content}</div></main>
-  </div>;
+  const initials = (profile.name || "Meera Sharma").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase() || "MS";
+
+  return (
+    <div className="app-shell">
+      <a href="#main-content" className="skip-link">Skip to main content</a>
+      <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
+        <div className="brand" onClick={() => go("overview")} title="PlanzyPop AI — Your vibe. Your plan. Your party.">
+          <span className="brand-mark"><i/><i/><i/></span>
+          <b>PlanzyPop</b>
+          <small>AI</small>
+        </div>
+        <nav aria-label="Main navigation">
+          {nav.map(n => (
+            <button key={n.id} className={page === n.id ? "active" : ""} onClick={() => go(n.id)}>
+              <Icon name={n.icon}/>
+              <span>{n.label}</span>
+              {n.id === "tasks" && <i className="count">{tasks.filter(t => !t.done).length}</i>}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <div className="mini-avatar">{initials}</div>
+          <div>
+            <b>{profile.name}</b>
+            <span>PlanzyPop workspace</span>
+          </div>
+          <button onClick={() => go("settings")} aria-label="Open settings"><Icon name="settings" size={17}/></button>
+        </div>
+      </aside>
+
+      {mobileOpen && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)}/>}
+
+      <main id="main-content">
+        <div className="mobile-head">
+          <button aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu"/></button>
+          <div className="brand" title="PlanzyPop AI — Your vibe. Your plan. Your party.">
+            <span className="brand-mark"><i/><i/><i/></span>
+            <b>PlanzyPop</b>
+            <small>AI</small>
+          </div>
+          <button aria-label="Notifications"><Icon name="bell"/></button>
+        </div>
+        <div className="topbar">
+          <div className="demo-badge">
+            <i style={{ background: backendOnline ? "var(--green)" : "#e2933e" }}/>
+            {backendOnline ? "BACKEND CONNECTED" : "DEMO MODE"}
+          </div>
+          <button className="icon-btn" aria-label="Search celebration records"><Icon name="search"/></button>
+          <button className="icon-btn notification" aria-label="Celebration notifications"><Icon name="bell"/><i/></button>
+        </div>
+        <div className="page-content">{content}</div>
+      </main>
+    </div>
+  );
 }
