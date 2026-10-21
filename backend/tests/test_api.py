@@ -287,3 +287,125 @@ def test_chat_caching_performance():
     res2 = client.post("/api/chat", json=payload)
     assert res2.status_code == 200
     assert res1.json()["response"] == res2.json()["response"]
+
+
+def test_zero_budget_community_celebration():
+    """Verify zero-budget celebrations (potlucks, community meetups) validate and return zero allocation."""
+    payload = {
+        "eventName": "Neighbourhood Potluck Picnic",
+        "eventType": "Community event",
+        "guests": 60,
+        "budgetInr": 0,
+        "celebrationStyle": "Inclusive & uplifting",
+        "mainPriority": "Community logistics",
+    }
+    response = client.post("/api/plan", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    budget_items = data.get("budget_allocation") or data.get("budgetAllocation")
+    assert len(budget_items) > 0
+    total = sum(i["amount_inr"] for i in budget_items)
+    assert total == 0, "Zero-budget event must allocate exactly 0 INR across categories."
+
+
+def test_rate_limiter_proxy_forwarded_for():
+    """Verify rate limiter correctly reads X-Forwarded-For client IP from reverse proxies."""
+    from app.core.rate_limiter import InMemoryRateLimiter
+    from fastapi import Request
+
+    test_limiter = InMemoryRateLimiter(limit_per_minute=2)
+    # Simulate proxy with multiple forwarded IPs: client, proxy1, proxy2
+    scope = {
+        "type": "http",
+        "client": ("10.0.0.1", 5000),
+        "headers": [(b"x-forwarded-for", b"203.0.113.195, 10.0.0.1")],
+    }
+    req = Request(scope)
+
+    test_limiter.check(req)
+    test_limiter.check(req)
+
+    # 3rd request should fail for client IP 203.0.113.195
+    with pytest.raises(Exception) as exc_info:
+        test_limiter.check(req)
+    assert "429" in str(exc_info.value)
+    assert "203.0.113.195" in test_limiter.requests
+
+
+def test_rate_limiter_untrusted_proxy_fallback():
+    """Verify rate limiter does not trust arbitrary forwarded headers when proxy trust is disabled."""
+    from app.core.config import settings
+    from app.core.rate_limiter import InMemoryRateLimiter
+    from fastapi import Request
+
+    original_setting = settings.TRUST_PROXY_HEADERS
+    try:
+        settings.TRUST_PROXY_HEADERS = False
+        test_limiter = InMemoryRateLimiter(limit_per_minute=2)
+        scope = {
+            "type": "http",
+            "client": ("192.168.1.50", 5000),
+            "headers": [(b"x-forwarded-for", b"spoofed.ip.address")],
+        }
+        req = Request(scope)
+
+        test_limiter.check(req)
+        # Must track direct peer IP, not spoofed forwarded header
+        assert "192.168.1.50" in test_limiter.requests
+        assert "spoofed.ip.address" not in test_limiter.requests
+    finally:
+        settings.TRUST_PROXY_HEADERS = original_setting
+
+
+def test_cache_fifo_eviction():
+    """Verify cache helpers evict oldest entries when max capacity is reached."""
+    import sys
+    from app.schemas.planner import PlanResponse
+    import app.services.gemini_service  # Ensure module is loaded
+
+    gemini_mod = sys.modules["app.services.gemini_service"]
+
+    # Temporarily set a small capacity for deterministic testing
+    original_max = gemini_mod._MAX_CACHE_ENTRIES
+    try:
+        gemini_mod._MAX_CACHE_ENTRIES = 3
+        # Clear cache for isolated test
+        gemini_mod._PLAN_CACHE.clear()
+
+        dummy_plan = PlanResponse(
+            concept_title="Test",
+            concept_description="Test",
+            vibe="Test",
+            color_palette=[],
+            budget_allocation=[],
+            preparation_timeline=[],
+            checklist=[],
+            menu_ideas=[],
+            vendor_categories=[],
+            cost_saving_suggestions=[],
+            is_demo=True,
+            source="test",
+        )
+
+        gemini_mod._store_plan_cache("key1", dummy_plan)
+        gemini_mod._store_plan_cache("key2", dummy_plan)
+        gemini_mod._store_plan_cache("key3", dummy_plan)
+
+        assert "key1" in gemini_mod._PLAN_CACHE
+        assert len(gemini_mod._PLAN_CACHE) == 3
+
+        # 4th item should evict oldest "key1"
+        gemini_mod._store_plan_cache("key4", dummy_plan)
+        assert len(gemini_mod._PLAN_CACHE) == 3
+        assert "key1" not in gemini_mod._PLAN_CACHE
+        assert "key4" in gemini_mod._PLAN_CACHE
+
+        # Accessing key2 should promote it in LRU order
+        gemini_mod._get_from_plan_cache("key2")
+        # 5th item should now evict "key3", keeping "key2" and "key4"
+        gemini_mod._store_plan_cache("key5", dummy_plan)
+        assert "key3" not in gemini_mod._PLAN_CACHE
+        assert "key2" in gemini_mod._PLAN_CACHE
+    finally:
+        gemini_mod._MAX_CACHE_ENTRIES = original_max
+        gemini_mod._PLAN_CACHE.clear()

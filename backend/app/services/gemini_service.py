@@ -18,10 +18,44 @@ from app.schemas.planner import (
 
 logger = logging.getLogger(__name__)
 
-# In-memory response cache for sub-millisecond repeated lookups and efficiency
+# In-memory LRU response cache for sub-millisecond repeated lookups and efficiency
 _PLAN_CACHE: Dict[str, PlanResponse] = {}
 _CHAT_CACHE: Dict[str, ChatResponse] = {}
 _MAX_CACHE_ENTRIES = 128
+
+
+def _get_from_plan_cache(key: str) -> Optional[PlanResponse]:
+    if key in _PLAN_CACHE:
+        val = _PLAN_CACHE.pop(key)
+        _PLAN_CACHE[key] = val
+        return val
+    return None
+
+
+def _store_plan_cache(key: str, plan: PlanResponse) -> None:
+    if key in _PLAN_CACHE:
+        _PLAN_CACHE.pop(key, None)
+    elif len(_PLAN_CACHE) >= _MAX_CACHE_ENTRIES:
+        oldest_key = next(iter(_PLAN_CACHE))
+        _PLAN_CACHE.pop(oldest_key, None)
+    _PLAN_CACHE[key] = plan
+
+
+def _get_from_chat_cache(key: str) -> Optional[ChatResponse]:
+    if key in _CHAT_CACHE:
+        val = _CHAT_CACHE.pop(key)
+        _CHAT_CACHE[key] = val
+        return val
+    return None
+
+
+def _store_chat_cache(key: str, chat: ChatResponse) -> None:
+    if key in _CHAT_CACHE:
+        _CHAT_CACHE.pop(key, None)
+    elif len(_CHAT_CACHE) >= _MAX_CACHE_ENTRIES:
+        oldest_key = next(iter(_CHAT_CACHE))
+        _CHAT_CACHE.pop(oldest_key, None)
+    _CHAT_CACHE[key] = chat
 
 
 def _get_plan_cache_key(req: PlanRequest) -> str:
@@ -343,9 +377,10 @@ class GeminiService:
     async def generate_plan(self, request: PlanRequest) -> PlanResponse:
         """Generate a complete event plan via Gemini, or fall back to curated demo plan with caching."""
         cache_key = _get_plan_cache_key(request)
-        if cache_key in _PLAN_CACHE:
+        cached_plan = _get_from_plan_cache(cache_key)
+        if cached_plan:
             logger.info("Serving event plan from cache (key=%s)", cache_key[:8])
-            return _PLAN_CACHE[cache_key]
+            return cached_plan
 
         client = self._get_client()
 
@@ -353,8 +388,7 @@ class GeminiService:
             msg = "Gemini API key is not configured in backend/.env. Using curated demo celebration plan."
             logger.info("%s", msg)
             plan = get_curated_plan(request, error_message=msg)
-            if len(_PLAN_CACHE) < _MAX_CACHE_ENTRIES:
-                _PLAN_CACHE[cache_key] = plan
+            _store_plan_cache(cache_key, plan)
             return plan
 
         prompt = (
@@ -454,8 +488,7 @@ class GeminiService:
                     source="gemini",
                 )
 
-                if len(_PLAN_CACHE) < _MAX_CACHE_ENTRIES:
-                    _PLAN_CACHE[cache_key] = plan
+                _store_plan_cache(cache_key, plan)
                 return plan
             except Exception as e:
                 last_error = e
@@ -467,16 +500,16 @@ class GeminiService:
         error_desc = categorize_gemini_error(last_error) if last_error else "Gemini API request failed. Serving curated demo plan."
         logger.warning("All Gemini generation attempts failed. %s", error_desc)
         fallback_plan = get_curated_plan(request, error_message=error_desc)
-        if len(_PLAN_CACHE) < _MAX_CACHE_ENTRIES:
-            _PLAN_CACHE[cache_key] = fallback_plan
+        _store_plan_cache(cache_key, fallback_plan)
         return fallback_plan
 
     async def generate_chat_reply(self, request: ChatRequest) -> ChatResponse:
         """Generate conversational event advice via Gemini, or provide curated response with caching."""
         cache_key = _get_chat_cache_key(request)
-        if cache_key in _CHAT_CACHE:
+        cached_chat = _get_from_chat_cache(cache_key)
+        if cached_chat:
             logger.info("Serving chat response from cache")
-            return _CHAT_CACHE[cache_key]
+            return cached_chat
 
         client = self._get_client()
 
@@ -497,8 +530,7 @@ class GeminiService:
                 source="curated_demo",
                 error_message="Gemini API key is not configured in backend/.env. Using demo assistant response.",
             )
-            if len(_CHAT_CACHE) < _MAX_CACHE_ENTRIES:
-                _CHAT_CACHE[cache_key] = resp
+            _store_chat_cache(cache_key, resp)
             return resp
 
         prompt = (
@@ -533,8 +565,7 @@ class GeminiService:
                         is_demo=False,
                         source="gemini",
                     )
-                    if len(_CHAT_CACHE) < _MAX_CACHE_ENTRIES:
-                        _CHAT_CACHE[cache_key] = resp
+                    _store_chat_cache(cache_key, resp)
                     return resp
             except Exception as e:
                 last_error = e
@@ -559,8 +590,7 @@ class GeminiService:
             source="curated_demo",
             error_message=error_desc,
         )
-        if len(_CHAT_CACHE) < _MAX_CACHE_ENTRIES:
-            _CHAT_CACHE[cache_key] = fallback_resp
+        _store_chat_cache(cache_key, fallback_resp)
         return fallback_resp
 
 

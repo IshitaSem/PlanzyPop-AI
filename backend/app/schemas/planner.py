@@ -41,7 +41,7 @@ class PlanRequest(BaseModel):
     date: Optional[str] = Field(default="2026-05-15", max_length=30, description="Target celebration date (YYYY-MM-DD)")
     location: str = Field(default="Jaipur, Rajasthan", max_length=200, description="City or venue name")
     guests: int = Field(..., ge=1, le=100000, description="Expected guest count")
-    budget_inr: int = Field(..., alias="budgetInr", ge=500, le=1000000000, description="Total budget in INR")
+    budget_inr: int = Field(..., alias="budgetInr", ge=0, le=1000000000, description="Total budget in INR")
 
     celebration_style: Optional[str] = Field(default="Warm & intimate", alias="celebrationStyle", max_length=100, description="Style mood or vibe")
     setting: Optional[str] = Field(default="Outdoor", max_length=100, description="Outdoor, Indoor, or Open to either")

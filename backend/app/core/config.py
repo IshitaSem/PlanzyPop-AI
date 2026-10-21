@@ -31,6 +31,7 @@ class Settings:
     # Performance and security controls
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
     AI_TIMEOUT_SECONDS: float = float(os.getenv("AI_TIMEOUT_SECONDS", "12.0"))
+    TRUST_PROXY_HEADERS: bool = os.getenv("TRUST_PROXY_HEADERS", "true").lower() in ("true", "1", "yes")
 
     @property
     def allowed_origins(self) -> List[str]:
